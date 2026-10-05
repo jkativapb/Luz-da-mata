@@ -24,6 +24,7 @@ export default function Dashboard() {
   const [categoriaPorProduto, setCategoriaPorProduto] = useState({})
   const [metaMes, setMetaMes] = useState(null)
   const [categoriaAberta, setCategoriaAberta] = useState(null) // 'em_dia' | 'atencao' | 'precisa_contato' | null
+  const [retornosAbertos, setRetornosAbertos] = useState(false)
 
   useEffect(() => {
     carregar()
@@ -206,10 +207,15 @@ export default function Dashboard() {
   }, 0)
   const hojeData = dataLocal(new Date().toISOString().slice(0, 10))
   const fimSemana = hojeData ? new Date(hojeData.getFullYear(), hojeData.getMonth(), hojeData.getDate() + 7) : null
-  const retornosSemana = vendasCondicionais.filter((v) => {
-    const retorno = dataLocal(v.data_retorno_condicional || v.data_retorno)
-    return retorno && hojeData && fimSemana && retorno >= hojeData && retorno <= fimSemana
-  }).length
+  const condicionaisRetornoSemana = vendasCondicionais
+    .map((v) => ({
+      ...v,
+      dataRetorno: dataLocal(v.data_retorno_condicional || v.data_retorno),
+    }))
+    .filter((v) => v.dataRetorno && hojeData && fimSemana && v.dataRetorno >= hojeData && v.dataRetorno <= fimSemana)
+    .sort((a, b) => a.dataRetorno - b.dataRetorno)
+
+  const retornosSemana = condicionaisRetornoSemana.length
   const totalCondicional = vendasCondicionais.reduce((total, v) => {
     const itens = itensPorVenda[v.id] || []
     return total + itens.reduce((s, i) => s + Number(i.quantidade || 0) * Number(i.valor_unitario || 0), 0)
@@ -238,22 +244,97 @@ export default function Dashboard() {
     .filter((v) => v.situacao_pagamento === 'pago' && dataLocal(v.data_pagamento || v.data_venda)?.getMonth() === hoje.getMonth() && dataLocal(v.data_pagamento || v.data_venda)?.getFullYear() === hoje.getFullYear())
     .reduce((total, v) => total + (itensPorVenda[v.id] || []).reduce((s, i) => s + Number(i.quantidade || 0) * Number(i.valor_unitario || 0), 0), 0)
 
-  // -------- relacionamento: último contato (visita ou venda) por contato --------
-  // considerando somente visitas/vendas ligadas a contatos ativos
+  // -------- relacionamento: último contato real do cadastro --------
+  // O Dashboard deve usar a data registrada no cadastro do cliente como
+  // referência principal. Visitas e vendas ficam apenas como fallback para
+  // clientes antigos que ainda não possuem a data gravada no cadastro.
   const ultimoContato = {}
-  ;[...visitasAtivas.filter((v) => v.contato_id), ...vendasAtivasHoje].forEach((r) => {
-    const data = r.data_visita || r.data_venda
-    const id = r.contato_id
-    if (!ultimoContato[id] || new Date(data) > new Date(ultimoContato[id])) {
-      ultimoContato[id] = data
+
+  function dataValida(valor) {
+    if (!valor) return null
+    const texto = String(valor).slice(0, 10)
+    const [ano, mes, dia] = texto.split('-').map(Number)
+    if (!ano || !mes || !dia) return null
+    const data = new Date(ano, mes - 1, dia)
+    return Number.isNaN(data.getTime()) ? null : data
+  }
+
+  function dataUltimoContatoCadastro(c) {
+    // Mantemos algumas variações para compatibilidade com versões anteriores
+    // do cadastro/banco, sem exigir alteração em outras telas.
+    const campos = [
+      'ultimo_contato',
+      'data_ultimo_contato',
+      'ultimoContato',
+      'dataUltimoContato',
+      'data_contato',
+      'dataContato',
+    ]
+
+    for (const campo of campos) {
+      const data = dataValida(c?.[campo])
+      if (data) return data
     }
+
+    return null
+  }
+
+  // Primeiro: data de último contato salva diretamente no cadastro.
+  contatosAtivos.forEach((c) => {
+    const data = dataUltimoContatoCadastro(c)
+    if (data) ultimoContato[c.id] = data
   })
 
-  // classifica cada contato ativo em em_dia / atencao / precisa_contato
+  // Fallback: para cadastros antigos sem a data no próprio contato,
+  // considera a atividade mais recente de visita ou venda.
+  ;[...visitasAtivas.filter((v) => v.contato_id), ...vendasAtivasHoje].forEach((r) => {
+    const data = dataValida(r.data_visita || r.data_venda)
+    const id = r.contato_id
+    if (!data || ultimoContato[id]) return
+    ultimoContato[id] = data
+  })
+
+  // Regra do giro de carteira integrada ao PRÓXIMO CONTATO:
+  // - mais de 5 dias até o próximo contato = EM DIA
+  // - faltando 5 dias ou menos = ATENÇÃO
+  // - passou da data marcada = PRECISA DE CONTATO
+  //
+  // Se o cliente não tiver próximo contato agendado, usamos o último contato
+  // como fallback para não perder clientes antigos da carteira.
   const porCategoria = { em_dia: [], atencao: [], precisa_contato: [] }
+
+  function proximoContato(c) {
+    return dataValida(c?.data_proximo_contato)
+  }
+
   contatosAtivos.forEach((c) => {
-    const cat = categoriaRelacionamento(ultimoContato[c.id])
-    porCategoria[cat].push(c)
+    const ultimo = ultimoContato[c.id]
+    const proximo = proximoContato(c)
+    const diasAteProximo = proximo
+      ? Math.floor((proximo - hojeData) / 86400000)
+      : null
+    const diasDesdeUltimo = ultimo
+      ? Math.max(0, Math.floor((hojeData - ultimo) / 86400000))
+      : null
+
+    // Quando existe próximo contato, ele passa a ser a referência principal.
+    if (diasAteProximo !== null) {
+      if (diasAteProximo < 0) {
+        // A data marcada já passou.
+        porCategoria.precisa_contato.push(c)
+      } else if (diasAteProximo <= 5) {
+        // Faltam 5 dias ou menos para o retorno.
+        porCategoria.atencao.push(c)
+      } else {
+        // Ainda faltam mais de 5 dias.
+        porCategoria.em_dia.push(c)
+      }
+    } else if (diasDesdeUltimo !== null && diasDesdeUltimo < 5) {
+      // Sem próximo contato cadastrado: fallback pelo último contato.
+      porCategoria.atencao.push(c)
+    } else {
+      porCategoria.precisa_contato.push(c)
+    }
   })
 
   // lista "precisa de contato" ordenada pelo maior número de dias sem contato primeiro
@@ -358,7 +439,7 @@ export default function Dashboard() {
         })}
 
         <button
-          onClick={() => navigate('/vendas')}
+          onClick={() => setRetornosAbertos(true)}
           className="group text-left bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_7px_22px_rgba(77,45,18,0.04)] hover:shadow-[0_10px_26px_rgba(77,45,18,0.08)] transition-all flex items-center gap-2 min-h-[58px]"
         >
           <div className="w-9 h-9 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-base shrink-0">▣</div>
@@ -524,6 +605,54 @@ export default function Dashboard() {
           </div>
         </div>
       </section>
+
+      {/* Modal com os retornos dos condicionais desta semana */}
+      {retornosAbertos && (
+        <div className="fixed inset-0 bg-[#1d120b]/45 backdrop-blur-[2px] flex items-center justify-center p-4 sm:p-6 z-50">
+          <div className="bg-[#fffdfa] border border-[#eadfce] rounded-2xl p-5 sm:p-6 w-full max-w-3xl max-h-[82vh] overflow-y-auto shadow-2xl space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h3 className="font-display text-xl text-mata-ink">↻ Retornos dos condicionais</h3>
+                <p className="text-xs text-mata-ink/50 mt-1">Condicionais com retorno previsto para esta semana.</p>
+              </div>
+              <button onClick={() => setRetornosAbertos(false)} className="text-mata-ink/45 hover:text-mata-ink text-sm">Fechar ✕</button>
+            </div>
+
+            {condicionaisRetornoSemana.length === 0 ? (
+              <p className="text-sm text-mata-ink/40 py-6 text-center">Nenhum condicional com retorno previsto para esta semana.</p>
+            ) : (
+              <div className="space-y-2">
+                {condicionaisRetornoSemana.map((venda) => {
+                  const itens = itensPorVenda[venda.id] || []
+                  const total = itens.reduce((s, i) => s + Number(i.quantidade || 0) * Number(i.valor_unitario || 0), 0)
+                  return (
+                    <div key={venda.id} className="border border-[#eadfce] rounded-xl bg-white px-4 py-3 flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="font-medium text-sm text-mata-ink truncate">{venda.contatos?.nome || contatosPorId[venda.contato_id]?.nome || 'Cliente não informado'}</p>
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-mata-ink/55 mt-1">
+                          <span>Retorno: <strong className="text-mata-ink/75">{formatarData(venda.dataRetorno)}</strong></span>
+                          <span>{itens.reduce((s, i) => s + Number(i.quantidade || 0), 0)} item(ns)</span>
+                          <span>{formatarMoeda(total)}</span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRetornosAbertos(false)
+                          navigate('/vendas', { state: { editarVendaId: venda.id } })
+                        }}
+                        className="shrink-0 rounded-lg bg-[#B8782D] px-3 py-2 text-xs font-medium text-white hover:brightness-105 transition"
+                      >
+                        Ver venda →
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Modal com a lista detalhada da categoria clicada */}
       {categoriaAberta && (
