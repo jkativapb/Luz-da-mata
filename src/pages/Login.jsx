@@ -13,12 +13,21 @@ export default function Login() {
     setErro('')
     setCarregando(true)
 
-    const { error } = await entrarComEmailSenha(email, senha)
+    try {
+      const { error } = await entrarComEmailSenha(email, senha)
 
-    setCarregando(false)
-
-    if (error) {
-      setErro('Email ou senha incorretos.')
+      if (error) {
+        setErro('Email ou senha incorretos.')
+      }
+    } catch (error) {
+      console.error('Erro ao fazer login:', error)
+      setErro(
+        error?.message
+          ? `Não foi possível entrar: ${error.message}`
+          : 'Não foi possível entrar. Verifique sua conexão e tente novamente.'
+      )
+    } finally {
+      setCarregando(false)
     }
   }
 
