@@ -33,11 +33,7 @@ export function AuthProvider({ children }) {
       password: senha,
     })
 
-    if (error) {
-      throw error
-    }
-
-    return data
+    return { data, error }
   }
 
   async function sair() {
