@@ -106,3 +106,30 @@ crm-luzdamata/
 - Editar preço dos produtos direto numa tela de "Produtos"
 - Filtro de período no dashboard (não só mês atual)
 - Notificação por e-mail/WhatsApp quando alguém passar de 30 dias
+
+## Atualização técnica 1.1.0 — CRM compartilhado
+
+Esta versão sincroniza o código React com o banco Supabase e transforma o CRM em um ambiente compartilhado pela equipe.
+
+### Ordem de implantação
+
+1. **Faça um backup do banco atual.**
+2. Abra o **SQL Editor** do Supabase.
+3. Execute `sql/schema.sql` inteiro. O script é idempotente e adiciona os campos/tabelas que estavam ausentes sem apagar os registros existentes.
+4. Confirme que os usuários da equipe conseguem acessar o sistema normalmente.
+5. Publique esta versão no Netlify.
+6. Mantenha no Netlify as variáveis `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY`.
+
+### O que foi corrigido
+
+- Schema canônico sincronizado com os campos realmente usados pelo React.
+- CRM compartilhado: usuários autenticados veem e editam todo o banco.
+- `vendedores` e `metas_mensais` incluídos no schema.
+- Campos de clientes, agenda, produtos, vendas e itens sincronizados.
+- Fotos de produtos com Storage configurado.
+- Salvamento de venda com `salvar_venda()` para gravar venda + itens de forma transacional.
+- Exclusão de cliente convertida em arquivamento, preservando histórico.
+- Relatórios com período, vendas, recebimento, a receber, condicionais, conversão, vendedores, produtos, carteira e exportação Excel.
+- Layout mobile corrigido: menu lateral vira gaveta, conteúdo passa a rolar verticalmente e cabeçalho se adapta a telas pequenas.
+
+> **Importante:** o arquivo do projeto não consegue alterar diretamente o banco remoto do seu Supabase. A sincronização do banco é feita executando `sql/schema.sql` no SQL Editor. O código já está preparado para essa estrutura.
