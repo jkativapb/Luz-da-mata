@@ -8,8 +8,8 @@ import { formatarData } from './helpers'
 export function exportarParaExcel({ contatos, visitas, vendas, itensPorVenda }) {
   const wb = XLSX.utils.book_new()
 
-  const compradores = contatos.filter((c) => c.tipo === 'comprador')
-  const revendedores = contatos.filter((c) => c.tipo === 'revendedor')
+  const compradores = contatos.filter((c) => c.tipo === 'cliente_final')
+  const revendedores = contatos.filter((c) => ['revendedora', 'clinica'].includes(c.tipo))
 
   const linhaContato = (c) => ({
     Nome: c.nome,
@@ -23,18 +23,20 @@ export function exportarParaExcel({ contatos, visitas, vendas, itensPorVenda }) 
   XLSX.utils.book_append_sheet(
     wb,
     XLSX.utils.json_to_sheet(compradores.map(linhaContato)),
-    'Compradores'
+    'Clientes finais'
   )
   XLSX.utils.book_append_sheet(
     wb,
     XLSX.utils.json_to_sheet(revendedores.map(linhaContato)),
-    'Revendedores'
+    'Profissionais'
   )
 
   const linhasVisitas = visitas.map((v) => ({
     Data: formatarData(v.data_visita),
     Contato: v.nome_lead || v.contatos?.nome || '',
     Tipo: v.tipo_contato === 'presencial' ? 'Presencial' : 'Videoconferência',
+    Status: v.status || '',
+    Responsável: v.responsavel || '',
     Convertido: v.convertido ? 'Sim' : 'Não',
     'Convertido em': v.tipo_conversao || '',
     Observações: v.observacoes || '',
@@ -45,10 +47,12 @@ export function exportarParaExcel({ contatos, visitas, vendas, itensPorVenda }) 
     Data: formatarData(v.data_venda),
     Cliente: v.contatos?.nome || '',
     'Forma de pagamento': v.forma_pagamento || '',
+    Vendedor: v.vendedor_nome || '',
+    Situação: v.situacao_pagamento || '',
     Total: (itensPorVenda[v.id] || []).reduce(
-      (soma, i) => soma + i.quantidade * i.valor_unitario,
+      (soma, i) => soma + Number(i.quantidade || 0) * Number(i.valor_unitario || 0),
       0
-    ),
+    ) - Number(v.desconto_venda || 0),
     Observações: v.observacoes || '',
   }))
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhasVendas), 'Vendas')
