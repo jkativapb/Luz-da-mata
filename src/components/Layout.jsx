@@ -57,8 +57,12 @@ export default function Layout() {
 
   return (
     <div className="h-screen bg-mata-cream flex overflow-hidden">
+      {/* Desktop mantém o menu lateral. No celular ele vira uma gaveta. */}
       <aside
-        className="w-60 text-mata-cream flex flex-col shrink-0 relative overflow-hidden bg-mata-bark"
+        className={`w-60 text-mata-cream flex flex-col shrink-0 relative overflow-hidden bg-mata-bark
+          flex fixed md:static inset-y-0 left-0 z-50 h-full
+          transition-transform duration-300 ease-in-out
+          ${menuAberto ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
         style={{
           backgroundImage: `linear-gradient(180deg, rgba(20,10,4,0.75), rgba(20,10,4,0.92)), url(${sidebarLeaves})`,
           backgroundSize: 'cover',
@@ -79,6 +83,7 @@ export default function Layout() {
               key={l.to}
               to={l.to}
               end={l.end}
+              onClick={() => setMenuAberto(false)}
               className={({ isActive }) =>
                 `block px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                   isActive ? 'bg-mata-copper text-white' : 'text-mata-sand/80 hover:bg-white/5'
@@ -100,12 +105,29 @@ export default function Layout() {
         </div>
       </aside>
 
-      <div className="flex-1 min-w-0 flex flex-col min-h-0">
-        <header className="h-12 shrink-0 border-b border-mata-sand bg-mata-cream flex items-center justify-between px-6 gap-4 relative">
-          <div className="flex items-center gap-4 min-w-0">
+      {menuAberto && (
+        <button
+          type="button"
+          aria-label="Fechar menu"
+          onClick={() => setMenuAberto(false)}
+          className="md:hidden fixed inset-0 z-40 bg-black/45"
+        />
+      )}
+
+      <div className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden">
+        <header className="min-h-14 md:h-12 shrink-0 border-b border-mata-sand bg-mata-cream flex items-center justify-between px-4 md:px-6 gap-3 relative z-40">
+          <div className="flex items-center gap-3 md:gap-4 min-w-0">
+            <button
+              type="button"
+              onClick={() => setMenuAberto((v) => !v)}
+              className="md:hidden w-9 h-9 shrink-0 rounded-lg bg-mata-bark text-mata-cream flex items-center justify-center text-lg"
+              aria-label={menuAberto ? 'Fechar menu' : 'Abrir menu'}
+            >
+              {menuAberto ? '✕' : '☰'}
+            </button>
             <span className="flex items-center gap-1.5 text-sm text-mata-ink/60 shrink-0">
               <span>🏠</span>
-              <span>Início</span>
+              <span className="hidden sm:inline">Início</span>
               {pageHeader.title && (
                 <>
                   <span className="text-mata-ink/30">/</span>
@@ -123,7 +145,7 @@ export default function Layout() {
           <div className="flex items-center gap-4 shrink-0">
             <button
               type="button"
-              className="text-mata-ink/50 hover:text-mata-ink"
+              className="hidden sm:block text-mata-ink/50 hover:text-mata-ink"
               title="Notificações"
             >
               🔔
@@ -169,9 +191,9 @@ export default function Layout() {
           }}
         >
           {pageHeader.title && (
-            <div className="h-[85px] shrink-0 px-6 flex items-center gap-4 relative overflow-hidden bg-transparent">
+            <div className="min-h-[72px] md:h-[85px] shrink-0 px-4 md:px-6 py-3 md:py-0 flex flex-wrap items-center gap-3 md:gap-4 relative overflow-hidden bg-transparent">
               <div className="relative z-10 min-w-0 shrink-0">
-                <h2 className="font-display text-[32px] lg:text-[38px] text-mata-ink leading-tight">
+                <h2 className="font-display text-[28px] md:text-[32px] lg:text-[38px] text-mata-ink leading-tight">
                   {pageHeader.title}
                 </h2>
                 {pageHeader.subtitle && (
@@ -179,7 +201,7 @@ export default function Layout() {
                 )}
               </div>
 
-              <div className="relative z-10 ml-auto flex items-center gap-8 shrink-0 -translate-y-2">
+              <div className="relative z-10 ml-auto flex items-center gap-3 md:gap-8 shrink-0 md:-translate-y-2 max-w-full">
                 <p className="hidden xl:block italic font-display text-mata-copper text-base leading-snug text-center whitespace-nowrap">
                   Conexões que geram
                   <br />
@@ -187,15 +209,15 @@ export default function Layout() {
                 </p>
 
                 {pageHeader.actions && (
-                  <div className="shrink-0">{pageHeader.actions}</div>
+                  <div className="shrink-0 max-w-full">{pageHeader.actions}</div>
                 )}
               </div>
             </div>
           )}
-          <main className="flex-1 min-w-0 min-h-0 overflow-hidden bg-transparent px-4 lg:px-[24px]">
+          <main className="flex-1 min-w-0 min-h-0 overflow-y-auto overflow-x-hidden bg-transparent px-3 md:px-4 lg:px-[24px] pb-4">
           <Outlet context={{ setPageHeader }} />
           </main>
-          <footer className="h-8 shrink-0 bg-[#fbf7f0]/8 flex items-center justify-center text-xs text-mata-ink/60 relative overflow-hidden">
+          <footer className="hidden md:flex h-8 shrink-0 bg-[#fbf7f0]/8 items-center justify-center text-xs text-mata-ink/60 relative overflow-hidden">
             <div className="w-fit mx-auto px-6 flex items-center justify-center gap-24">
               <div className="flex items-center gap-2 min-w-0">
                 <span className="text-mata-gold shrink-0">
@@ -208,7 +230,7 @@ export default function Layout() {
               </div>
 
               <div className="flex items-center gap-3 shrink-0">
-                <span>v1.0.0</span>
+                <span>v1.1.0</span>
                 <span className="text-mata-sand">|</span>
                 <button type="button" className="hover:text-mata-ink">Ajuda</button>
                 <span className="text-mata-sand">|</span>
