@@ -132,36 +132,55 @@ export default function Dashboard() {
     return new Date(ano, mes - 1, 1).toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }).replace('.', '')
   }
 
+  function totalVenda(venda) {
+    const itens = itensPorVenda[venda.id] || []
+    return itens.reduce(
+      (soma, item) => soma + Number(item.quantidade || 0) * Number(item.valor_unitario || 0),
+      0
+    )
+  }
+
   const hoje = new Date()
   const inicioMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1)
 
-  let rendaMes = 0
   let rendaAcumulada = 0
+  let rendaMes = 0
+  let totalRecebido = 0
+  let totalAReceber = 0
+  let totalCondicional = 0
   const vendasPorMes = {}
   const vendedorTotais = {}
 
   vendasParaIndicadores.forEach((v) => {
-    const itens = itensPorVenda[v.id] || []
-    const totalVenda = itens.reduce((s, i) => s + Number(i.quantidade || 0) * Number(i.valor_unitario || 0), 0)
+    const totalVendaAtual = totalVenda(v)
     const dataVenda = dataLocal(v.data_venda)
 
-    // Renda = dinheiro efetivamente recebido.
-    // A receber e condicional continuam sendo vendas, mas não entram como renda recebida.
-    if (v.situacao_pagamento === 'pago') {
-      rendaAcumulada += totalVenda
-      const dataRecebimento = dataLocal(v.data_pagamento || v.data_venda)
-      if (dataRecebimento && dataRecebimento >= inicioMes) rendaMes += totalVenda
-    }
-
-    // O gráfico de vendas mostra o que foi vendido, mas não considera produtos em condicional como venda efetivada.
+    // Venda efetivada = tudo que NÃO está em condicional.
+    // Renda acumulada: todas as vendas efetivadas, independentemente de já terem sido pagas.
     if (v.situacao_pagamento !== 'condicional') {
+      rendaAcumulada += totalVendaAtual
+
+      // Renda do mês: vendas efetivadas realizadas no mês atual.
+      if (dataVenda && dataVenda >= inicioMes) {
+        rendaMes += totalVendaAtual
+      }
+
       const mes = chaveMes(v.data_venda)
-      if (mes) vendasPorMes[mes] = (vendasPorMes[mes] || 0) + totalVenda
+      if (mes) vendasPorMes[mes] = (vendasPorMes[mes] || 0) + totalVendaAtual
 
       const nomeVendedor = v.vendedor_nome || 'Não informado'
       if (!vendedorTotais[nomeVendedor]) vendedorTotais[nomeVendedor] = { total: 0, vendas: 0 }
-      vendedorTotais[nomeVendedor].total += totalVenda
+      vendedorTotais[nomeVendedor].total += totalVendaAtual
       vendedorTotais[nomeVendedor].vendas += 1
+    }
+
+    // Financeiro separado por situação de pagamento.
+    if (v.situacao_pagamento === 'pago') {
+      totalRecebido += totalVendaAtual
+    } else if (v.situacao_pagamento === 'a_receber') {
+      totalAReceber += totalVendaAtual
+    } else if (v.situacao_pagamento === 'condicional') {
+      totalCondicional += totalVendaAtual
     }
   })
 
@@ -216,11 +235,6 @@ export default function Dashboard() {
     .sort((a, b) => a.dataRetorno - b.dataRetorno)
 
   const retornosSemana = condicionaisRetornoSemana.length
-  const totalCondicional = vendasCondicionais.reduce((total, v) => {
-    const itens = itensPorVenda[v.id] || []
-    return total + itens.reduce((s, i) => s + Number(i.quantidade || 0) * Number(i.valor_unitario || 0), 0)
-  }, 0)
-
   // -------- contas a receber / inadimplência --------
   const contasReceber = []
   vendasParaIndicadores
@@ -368,37 +382,49 @@ export default function Dashboard() {
 
   return (
     <div className="w-full pt-px pb-3 space-y-[1px]">
-      {/* Indicadores principais */}
-      <section className="grid grid-cols-1 xl:grid-cols-3 gap-[5px]">
-        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-4 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[68px]">
-          <div className="w-11 h-11 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-2xl shrink-0">◉</div>
+      {/* Indicadores financeiros principais */}
+      <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-[5px]">
+        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px]">
+          <div className="w-9 h-9 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-lg shrink-0">◉</div>
           <div className="min-w-0 flex-1">
-            <p className="text-xs uppercase tracking-[0.08em] text-mata-ink/55">Renda acumulada</p>
-            <p className="font-display text-2xl lg:text-3xl text-mata-ink leading-tight mt-1">{formatarMoeda(rendaAcumulada)}</p>
+            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">Renda acumulada</p>
+            <p className="font-display text-xl lg:text-2xl text-mata-ink leading-tight mt-0.5 truncate">{formatarMoeda(rendaAcumulada)}</p>
           </div>
-          <span className="text-[#9A5B20] text-3xl opacity-70 group-hover:translate-x-1 transition-transform">›</span>
         </div>
 
-        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-4 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[68px]">
-          <div className="w-11 h-11 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-2xl shrink-0">▥</div>
+        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px]">
+          <div className="w-9 h-9 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-lg shrink-0">▥</div>
           <div className="min-w-0 flex-1">
-            <p className="text-xs uppercase tracking-[0.08em] text-mata-ink/55">Renda do mês</p>
-            <p className="font-display text-2xl lg:text-3xl text-mata-ink leading-tight mt-1">{formatarMoeda(rendaMes)}</p>
+            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">Renda do mês</p>
+            <p className="font-display text-xl lg:text-2xl text-mata-ink leading-tight mt-0.5 truncate">{formatarMoeda(rendaMes)}</p>
           </div>
-          <span className="text-[#9A5B20] text-3xl opacity-70 group-hover:translate-x-1 transition-transform">›</span>
+        </div>
+
+        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px]">
+          <div className="w-9 h-9 rounded-xl bg-green-50 text-green-700 flex items-center justify-center text-lg shrink-0">✓</div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">Recebido</p>
+            <p className="font-display text-xl lg:text-2xl text-green-700 leading-tight mt-0.5 truncate">{formatarMoeda(totalRecebido)}</p>
+          </div>
+        </div>
+
+        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px]">
+          <div className="w-9 h-9 rounded-xl bg-amber-50 text-amber-700 flex items-center justify-center text-lg shrink-0">◷</div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">A receber</p>
+            <p className="font-display text-xl lg:text-2xl text-amber-700 leading-tight mt-0.5 truncate">{formatarMoeda(totalAReceber)}</p>
+          </div>
         </div>
 
         <button
           onClick={() => navigate('/vendas')}
-          className="group bg-white/90 border border-[#eadfce] rounded-2xl px-4 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-3 min-h-[68px] text-left hover:shadow-[0_10px_26px_rgba(77,45,18,0.08)] transition-all"
+          className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px] text-left hover:shadow-[0_10px_26px_rgba(77,45,18,0.08)] transition-all"
         >
-          <div className="w-11 h-11 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-2xl shrink-0">♧</div>
+          <div className="w-9 h-9 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-lg shrink-0">♧</div>
           <div className="min-w-0 flex-1">
-            <p className="text-xs uppercase tracking-[0.08em] text-mata-ink/55">Condicionais</p>
-            <p className="font-display text-2xl lg:text-3xl text-mata-ink leading-none mt-1">{formatarMoeda(totalCondicional)}</p>
-            <p className="text-[10px] text-mata-ink/45 mt-1">Produtos enviados para avaliação</p>
+            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">Condicionais</p>
+            <p className="font-display text-xl lg:text-2xl text-mata-ink leading-tight mt-0.5 truncate">{formatarMoeda(totalCondicional)}</p>
           </div>
-          <span className="text-[#9A5B20] text-3xl opacity-70 group-hover:translate-x-1 transition-transform">›</span>
         </button>
       </section>
 
@@ -475,7 +501,7 @@ export default function Dashboard() {
           </div>
 
           <div className="flex-1 min-h-0">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
               <BarChart data={graficoMensal} margin={{ top: 6, right: 6, left: 4, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#EDE3D3" vertical={false} />
                 <XAxis dataKey="mes" tick={{ fontSize: 11, fill: '#59483A' }} axisLine={{ stroke: '#D9C7AE' }} tickLine={false} />
@@ -537,7 +563,7 @@ export default function Dashboard() {
 
       {/* Vendedores + contas a receber */}
       <section className="grid grid-cols-1 xl:grid-cols-[642fr_587fr] gap-[5px]">
-        <div className="bg-white/90 border border-[#eadfce] rounded-2xl p-4 shadow-[0_10px_30px_rgba(77,45,18,0.05)] xl:h-[205px] overflow-hidden">
+        <div className="bg-white/90 border border-[#eadfce] rounded-2xl p-4 shadow-[0_10px_30px_rgba(77,45,18,0.05)] xl:h-[235px] overflow-hidden">
           <div className="flex items-center justify-between gap-2 mb-2">
             <div className="flex items-center gap-3">
               <span className="text-[#9A5B20] text-xl">♟</span>
@@ -548,7 +574,7 @@ export default function Dashboard() {
           {vendasPorVendedor.length === 0 ? (
             <div className="h-[125px] flex items-center justify-center text-sm text-mata-ink/40 text-center px-4">Ainda não há vendas atribuídas a vendedores.</div>
           ) : (
-            <div className="h-[165px]">
+            <div className="h-[165px] min-h-0 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={vendasPorVendedor} layout="vertical" margin={{ top: 0, right: 12, left: 8, bottom: 0 }} barCategoryGap="18%">
                   <CartesianGrid strokeDasharray="3 3" stroke="#EDE3D3" horizontal={false} />
@@ -562,7 +588,7 @@ export default function Dashboard() {
           )}
         </div>
 
-        <div className="bg-white/90 border border-[#eadfce] rounded-2xl p-4 shadow-[0_10px_30px_rgba(77,45,18,0.05)] xl:h-[205px] overflow-hidden">
+        <div className="bg-white/90 border border-[#eadfce] rounded-2xl p-4 shadow-[0_10px_30px_rgba(77,45,18,0.05)] xl:h-[235px] overflow-hidden">
           <div className="flex items-center justify-between gap-2 mb-2">
             <div className="flex items-center gap-3">
               <span className="text-[#9A5B20] text-xl">◷</span>

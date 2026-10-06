@@ -417,8 +417,8 @@ export default function Cadastro() {
           {busca ? 'Nenhum resultado para essa busca.' : 'Nenhum cadastro ainda nesta categoria.'}
         </p>
       ) : (
-        <div className="bg-white/90 border border-[#eadfce] rounded-2xl shadow-[0_8px_26px_rgba(77,45,18,0.04)] overflow-hidden">
-          <div className="max-h-[calc(100vh-430px)] min-h-[220px] overflow-auto [scrollbar-width:thin] [scrollbar-color:#d9b98f_transparent]">
+        <div className="h-[calc(100vh-335px)] min-h-[220px] bg-white/90 border border-[#eadfce] rounded-2xl shadow-[0_8px_26px_rgba(77,45,18,0.04)] overflow-hidden">
+          <div className="h-full overflow-x-auto overflow-y-scroll [scrollbar-width:thin] [scrollbar-color:#d9b98f_transparent]">
           <table className="w-full text-sm min-w-[760px]">
             <thead className="bg-[#f8f1e7] text-mata-ink/60 text-xs uppercase tracking-wide sticky top-0 z-10 shadow-[0_1px_0_#eadfce]">
               <tr>

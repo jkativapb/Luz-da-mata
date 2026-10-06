@@ -391,67 +391,56 @@ export default function Vendas() {
       nf_cancelada: Boolean(form.nf_cancelada),
     }
 
-    let vendaSalva
+    const itensParaSalvar = itensValidos.map((i) => ({
+      produto_id: i.produto_id || null,
+      produto_nome: i.produto_nome,
+      quantidade: Number(i.quantidade) || 0,
+      valor_unitario: Number(i.valor_unitario) || 0,
+      preco_base: Number(i.preco_base) || Number(i.valor_unitario) || 0,
+      desconto_percentual: Number(i.desconto_percentual) || 0,
+      tipo_cliente: i.tipo_cliente || 'cliente_final',
+      quantidade_vendida: Number(i.quantidade_vendida || 0),
+      quantidade_devolvida: Number(i.quantidade_devolvida || 0),
+    }))
 
-    if (form.id) {
-      const { data, error } = await supabase
-        .from('vendas')
-        .update(payloadVenda)
-        .eq('id', form.id)
-        .select()
-        .single()
+    // Persistência transacional: venda e itens são gravados como uma única operação.
+    const { data: vendaId, error: erroTransacao } = await supabase.rpc('salvar_venda', {
+      p_venda: { ...payloadVenda, ...(form.id ? { id: form.id } : {}) },
+      p_itens: itensParaSalvar,
+    })
 
-      if (error || !data) {
-        console.error('Erro ao atualizar venda:', error)
-        alert(`Não foi possível atualizar a venda: ${error?.message || 'erro desconhecido'}`)
-        return
-      }
-      vendaSalva = data
-
-      const { error: erroExcluirItens } = await supabase
-        .from('itens_venda')
-        .delete()
-        .eq('venda_id', form.id)
-
-      if (erroExcluirItens) {
-        alert(`A venda foi atualizada, mas os itens não puderam ser substituídos: ${erroExcluirItens.message}`)
-        return
-      }
-    } else {
-      const { data, error } = await supabase
-        .from('vendas')
-        .insert(payloadVenda)
-        .select()
-        .single()
-
-      if (error || !data) {
-        console.error('Erro ao salvar venda:', error)
-        alert(`Não foi possível salvar a venda: ${error?.message || 'erro desconhecido'}`)
-        return
-      }
-      vendaSalva = data
-    }
-
-    const { error: erroInserirItens } = await supabase.from('itens_venda').insert(
-      itensValidos.map((i) => ({
-        produto_id: i.produto_id || null,
-        produto_nome: i.produto_nome,
-        quantidade: Number(i.quantidade) || 0,
-        valor_unitario: Number(i.valor_unitario) || 0,
-        preco_base: Number(i.preco_base) || Number(i.valor_unitario) || 0,
-        desconto_percentual: Number(i.desconto_percentual) || 0,
-        tipo_cliente: i.tipo_cliente || 'cliente_final',
-        quantidade_vendida: Number(i.quantidade_vendida || 0),
-        quantidade_devolvida: Number(i.quantidade_devolvida || 0),
-        venda_id: vendaSalva.id,
-      })),
-    )
-
-    if (erroInserirItens) {
-      console.error('Erro ao salvar itens da venda:', erroInserirItens)
-      alert(`A venda foi gravada, mas os itens não puderam ser salvos: ${erroInserirItens.message}`)
+    if (erroTransacao || !vendaId) {
+      console.error('Erro transacional ao salvar venda:', erroTransacao)
+      alert(`Não foi possível salvar a venda: ${erroTransacao?.message || 'erro desconhecido'}`)
       return
     }
+
+    const { data: vendaSalva, error: erroBuscarVenda } = await supabase
+      .from('vendas')
+      .select('*, contatos(nome)')
+      .eq('id', vendaId)
+      .single()
+
+    if (erroBuscarVenda || !vendaSalva) {
+      alert(`A venda foi gravada, mas não foi possível atualizar a tela: ${erroBuscarVenda?.message || 'erro desconhecido'}`)
+      return
+    }
+
+    const { data: itensSalvos, error: erroItens } = await supabase
+      .from('itens_venda')
+      .select('*')
+      .eq('venda_id', vendaId)
+
+    if (erroItens) {
+      alert(`A venda foi gravada, mas os itens não puderam ser carregados: ${erroItens.message}`)
+      return
+    }
+
+    setVendas((lista) => {
+      const existe = lista.some((item) => item.id === vendaSalva.id)
+      return existe ? lista.map((item) => item.id === vendaSalva.id ? vendaSalva : item) : [vendaSalva, ...lista]
+    })
+    setItensPorVenda((atual) => ({ ...atual, [vendaSalva.id]: itensSalvos || [] }))
 
     setForm(vendaVazia)
     setSituacaoPagamento('pago')

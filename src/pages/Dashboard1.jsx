@@ -24,6 +24,7 @@ export default function Dashboard() {
   const [categoriaPorProduto, setCategoriaPorProduto] = useState({})
   const [metaMes, setMetaMes] = useState(null)
   const [categoriaAberta, setCategoriaAberta] = useState(null) // 'em_dia' | 'atencao' | 'precisa_contato' | null
+  const [retornosAbertos, setRetornosAbertos] = useState(false)
 
   useEffect(() => {
     carregar()
@@ -134,8 +135,11 @@ export default function Dashboard() {
   const hoje = new Date()
   const inicioMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1)
 
-  let rendaMes = 0
   let rendaAcumulada = 0
+  let rendaMes = 0
+  let totalRecebido = 0
+  let totalAReceber = 0
+  let totalCondicional = 0
   const vendasPorMes = {}
   const vendedorTotais = {}
 
@@ -143,16 +147,34 @@ export default function Dashboard() {
     const itens = itensPorVenda[v.id] || []
     const totalVenda = itens.reduce((s, i) => s + Number(i.quantidade || 0) * Number(i.valor_unitario || 0), 0)
     const dataVenda = dataLocal(v.data_venda)
-    rendaAcumulada += totalVenda
-    if (dataVenda && dataVenda >= inicioMes) rendaMes += totalVenda
 
-    const mes = chaveMes(v.data_venda)
-    if (mes) vendasPorMes[mes] = (vendasPorMes[mes] || 0) + totalVenda
+    // Venda efetivada = tudo que NÃO está em condicional.
+    // Renda acumulada: todas as vendas efetivadas, independentemente de já terem sido pagas.
+    if (v.situacao_pagamento !== 'condicional') {
+      rendaAcumulada += totalVenda
 
-    const nomeVendedor = v.vendedor_nome || 'Não informado'
-    if (!vendedorTotais[nomeVendedor]) vendedorTotais[nomeVendedor] = { total: 0, vendas: 0 }
-    vendedorTotais[nomeVendedor].total += totalVenda
-    vendedorTotais[nomeVendedor].vendas += 1
+      // Renda do mês: vendas efetivadas realizadas no mês atual.
+      if (dataVenda && dataVenda >= inicioMes) {
+        rendaMes += totalVenda
+      }
+
+      const mes = chaveMes(v.data_venda)
+      if (mes) vendasPorMes[mes] = (vendasPorMes[mes] || 0) + totalVenda
+
+      const nomeVendedor = v.vendedor_nome || 'Não informado'
+      if (!vendedorTotais[nomeVendedor]) vendedorTotais[nomeVendedor] = { total: 0, vendas: 0 }
+      vendedorTotais[nomeVendedor].total += totalVenda
+      vendedorTotais[nomeVendedor].vendas += 1
+    }
+
+    // Financeiro separado por situação de pagamento.
+    if (v.situacao_pagamento === 'pago') {
+      totalRecebido += totalVenda
+    } else if (v.situacao_pagamento === 'a_receber') {
+      totalAReceber += totalVenda
+    } else if (v.situacao_pagamento === 'condicional') {
+      totalCondicional += totalVenda
+    }
   })
 
   // Sempre mostra os 6 meses correntes, inclusive meses sem venda.
@@ -197,15 +219,15 @@ export default function Dashboard() {
   }, 0)
   const hojeData = dataLocal(new Date().toISOString().slice(0, 10))
   const fimSemana = hojeData ? new Date(hojeData.getFullYear(), hojeData.getMonth(), hojeData.getDate() + 7) : null
-  const retornosSemana = vendasCondicionais.filter((v) => {
-    const retorno = dataLocal(v.data_retorno_condicional || v.data_retorno)
-    return retorno && hojeData && fimSemana && retorno >= hojeData && retorno <= fimSemana
-  }).length
-  const totalCondicional = vendasCondicionais.reduce((total, v) => {
-    const itens = itensPorVenda[v.id] || []
-    return total + itens.reduce((s, i) => s + Number(i.quantidade || 0) * Number(i.valor_unitario || 0), 0)
-  }, 0)
+  const condicionaisRetornoSemana = vendasCondicionais
+    .map((v) => ({
+      ...v,
+      dataRetorno: dataLocal(v.data_retorno_condicional || v.data_retorno),
+    }))
+    .filter((v) => v.dataRetorno && hojeData && fimSemana && v.dataRetorno >= hojeData && v.dataRetorno <= fimSemana)
+    .sort((a, b) => a.dataRetorno - b.dataRetorno)
 
+  const retornosSemana = condicionaisRetornoSemana.length
   // -------- contas a receber / inadimplência --------
   const contasReceber = []
   vendasParaIndicadores
@@ -229,22 +251,97 @@ export default function Dashboard() {
     .filter((v) => v.situacao_pagamento === 'pago' && dataLocal(v.data_pagamento || v.data_venda)?.getMonth() === hoje.getMonth() && dataLocal(v.data_pagamento || v.data_venda)?.getFullYear() === hoje.getFullYear())
     .reduce((total, v) => total + (itensPorVenda[v.id] || []).reduce((s, i) => s + Number(i.quantidade || 0) * Number(i.valor_unitario || 0), 0), 0)
 
-  // -------- relacionamento: último contato (visita ou venda) por contato --------
-  // considerando somente visitas/vendas ligadas a contatos ativos
+  // -------- relacionamento: último contato real do cadastro --------
+  // O Dashboard deve usar a data registrada no cadastro do cliente como
+  // referência principal. Visitas e vendas ficam apenas como fallback para
+  // clientes antigos que ainda não possuem a data gravada no cadastro.
   const ultimoContato = {}
-  ;[...visitasAtivas.filter((v) => v.contato_id), ...vendasAtivasHoje].forEach((r) => {
-    const data = r.data_visita || r.data_venda
-    const id = r.contato_id
-    if (!ultimoContato[id] || new Date(data) > new Date(ultimoContato[id])) {
-      ultimoContato[id] = data
+
+  function dataValida(valor) {
+    if (!valor) return null
+    const texto = String(valor).slice(0, 10)
+    const [ano, mes, dia] = texto.split('-').map(Number)
+    if (!ano || !mes || !dia) return null
+    const data = new Date(ano, mes - 1, dia)
+    return Number.isNaN(data.getTime()) ? null : data
+  }
+
+  function dataUltimoContatoCadastro(c) {
+    // Mantemos algumas variações para compatibilidade com versões anteriores
+    // do cadastro/banco, sem exigir alteração em outras telas.
+    const campos = [
+      'ultimo_contato',
+      'data_ultimo_contato',
+      'ultimoContato',
+      'dataUltimoContato',
+      'data_contato',
+      'dataContato',
+    ]
+
+    for (const campo of campos) {
+      const data = dataValida(c?.[campo])
+      if (data) return data
     }
+
+    return null
+  }
+
+  // Primeiro: data de último contato salva diretamente no cadastro.
+  contatosAtivos.forEach((c) => {
+    const data = dataUltimoContatoCadastro(c)
+    if (data) ultimoContato[c.id] = data
   })
 
-  // classifica cada contato ativo em em_dia / atencao / precisa_contato
+  // Fallback: para cadastros antigos sem a data no próprio contato,
+  // considera a atividade mais recente de visita ou venda.
+  ;[...visitasAtivas.filter((v) => v.contato_id), ...vendasAtivasHoje].forEach((r) => {
+    const data = dataValida(r.data_visita || r.data_venda)
+    const id = r.contato_id
+    if (!data || ultimoContato[id]) return
+    ultimoContato[id] = data
+  })
+
+  // Regra do giro de carteira integrada ao PRÓXIMO CONTATO:
+  // - mais de 5 dias até o próximo contato = EM DIA
+  // - faltando 5 dias ou menos = ATENÇÃO
+  // - passou da data marcada = PRECISA DE CONTATO
+  //
+  // Se o cliente não tiver próximo contato agendado, usamos o último contato
+  // como fallback para não perder clientes antigos da carteira.
   const porCategoria = { em_dia: [], atencao: [], precisa_contato: [] }
+
+  function proximoContato(c) {
+    return dataValida(c?.data_proximo_contato)
+  }
+
   contatosAtivos.forEach((c) => {
-    const cat = categoriaRelacionamento(ultimoContato[c.id])
-    porCategoria[cat].push(c)
+    const ultimo = ultimoContato[c.id]
+    const proximo = proximoContato(c)
+    const diasAteProximo = proximo
+      ? Math.floor((proximo - hojeData) / 86400000)
+      : null
+    const diasDesdeUltimo = ultimo
+      ? Math.max(0, Math.floor((hojeData - ultimo) / 86400000))
+      : null
+
+    // Quando existe próximo contato, ele passa a ser a referência principal.
+    if (diasAteProximo !== null) {
+      if (diasAteProximo < 0) {
+        // A data marcada já passou.
+        porCategoria.precisa_contato.push(c)
+      } else if (diasAteProximo <= 5) {
+        // Faltam 5 dias ou menos para o retorno.
+        porCategoria.atencao.push(c)
+      } else {
+        // Ainda faltam mais de 5 dias.
+        porCategoria.em_dia.push(c)
+      }
+    } else if (diasDesdeUltimo !== null && diasDesdeUltimo < 5) {
+      // Sem próximo contato cadastrado: fallback pelo último contato.
+      porCategoria.atencao.push(c)
+    } else {
+      porCategoria.precisa_contato.push(c)
+    }
   })
 
   // lista "precisa de contato" ordenada pelo maior número de dias sem contato primeiro
@@ -278,37 +375,49 @@ export default function Dashboard() {
 
   return (
     <div className="w-full pt-px pb-3 space-y-[1px]">
-      {/* Indicadores principais */}
-      <section className="grid grid-cols-1 xl:grid-cols-3 gap-[5px]">
-        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-4 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[68px]">
-          <div className="w-11 h-11 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-2xl shrink-0">◉</div>
+      {/* Indicadores financeiros principais */}
+      <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-[5px]">
+        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px]">
+          <div className="w-9 h-9 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-lg shrink-0">◉</div>
           <div className="min-w-0 flex-1">
-            <p className="text-xs uppercase tracking-[0.08em] text-mata-ink/55">Renda acumulada</p>
-            <p className="font-display text-2xl lg:text-3xl text-mata-ink leading-tight mt-1">{formatarMoeda(rendaAcumulada)}</p>
+            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">Renda acumulada</p>
+            <p className="font-display text-xl lg:text-2xl text-mata-ink leading-tight mt-0.5 truncate">{formatarMoeda(rendaAcumulada)}</p>
           </div>
-          <span className="text-[#9A5B20] text-3xl opacity-70 group-hover:translate-x-1 transition-transform">›</span>
         </div>
 
-        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-4 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[68px]">
-          <div className="w-11 h-11 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-2xl shrink-0">▥</div>
+        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px]">
+          <div className="w-9 h-9 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-lg shrink-0">▥</div>
           <div className="min-w-0 flex-1">
-            <p className="text-xs uppercase tracking-[0.08em] text-mata-ink/55">Renda do mês</p>
-            <p className="font-display text-2xl lg:text-3xl text-mata-ink leading-tight mt-1">{formatarMoeda(rendaMes)}</p>
+            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">Renda do mês</p>
+            <p className="font-display text-xl lg:text-2xl text-mata-ink leading-tight mt-0.5 truncate">{formatarMoeda(rendaMes)}</p>
           </div>
-          <span className="text-[#9A5B20] text-3xl opacity-70 group-hover:translate-x-1 transition-transform">›</span>
+        </div>
+
+        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px]">
+          <div className="w-9 h-9 rounded-xl bg-green-50 text-green-700 flex items-center justify-center text-lg shrink-0">✓</div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">Recebido</p>
+            <p className="font-display text-xl lg:text-2xl text-green-700 leading-tight mt-0.5 truncate">{formatarMoeda(totalRecebido)}</p>
+          </div>
+        </div>
+
+        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px]">
+          <div className="w-9 h-9 rounded-xl bg-amber-50 text-amber-700 flex items-center justify-center text-lg shrink-0">◷</div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">A receber</p>
+            <p className="font-display text-xl lg:text-2xl text-amber-700 leading-tight mt-0.5 truncate">{formatarMoeda(totalAReceber)}</p>
+          </div>
         </div>
 
         <button
           onClick={() => navigate('/vendas')}
-          className="group bg-white/90 border border-[#eadfce] rounded-2xl px-4 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-3 min-h-[68px] text-left hover:shadow-[0_10px_26px_rgba(77,45,18,0.08)] transition-all"
+          className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px] text-left hover:shadow-[0_10px_26px_rgba(77,45,18,0.08)] transition-all"
         >
-          <div className="w-11 h-11 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-2xl shrink-0">♧</div>
+          <div className="w-9 h-9 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-lg shrink-0">♧</div>
           <div className="min-w-0 flex-1">
-            <p className="text-xs uppercase tracking-[0.08em] text-mata-ink/55">Condicionais</p>
-            <p className="font-display text-2xl lg:text-3xl text-mata-ink leading-none mt-1">{formatarMoeda(totalCondicional)}</p>
-            <p className="text-[10px] text-mata-ink/45 mt-1">Produtos enviados para avaliação</p>
+            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">Condicionais</p>
+            <p className="font-display text-xl lg:text-2xl text-mata-ink leading-tight mt-0.5 truncate">{formatarMoeda(totalCondicional)}</p>
           </div>
-          <span className="text-[#9A5B20] text-3xl opacity-70 group-hover:translate-x-1 transition-transform">›</span>
         </button>
       </section>
 
@@ -349,7 +458,7 @@ export default function Dashboard() {
         })}
 
         <button
-          onClick={() => navigate('/vendas')}
+          onClick={() => setRetornosAbertos(true)}
           className="group text-left bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_7px_22px_rgba(77,45,18,0.04)] hover:shadow-[0_10px_26px_rgba(77,45,18,0.08)] transition-all flex items-center gap-2 min-h-[58px]"
         >
           <div className="w-9 h-9 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-base shrink-0">▣</div>
@@ -447,7 +556,7 @@ export default function Dashboard() {
 
       {/* Vendedores + contas a receber */}
       <section className="grid grid-cols-1 xl:grid-cols-[642fr_587fr] gap-[5px]">
-        <div className="bg-white/90 border border-[#eadfce] rounded-2xl p-4 shadow-[0_10px_30px_rgba(77,45,18,0.05)] xl:h-[205px] overflow-hidden">
+        <div className="bg-white/90 border border-[#eadfce] rounded-2xl p-4 shadow-[0_10px_30px_rgba(77,45,18,0.05)] xl:h-[235px] overflow-hidden">
           <div className="flex items-center justify-between gap-2 mb-2">
             <div className="flex items-center gap-3">
               <span className="text-[#9A5B20] text-xl">♟</span>
@@ -458,7 +567,7 @@ export default function Dashboard() {
           {vendasPorVendedor.length === 0 ? (
             <div className="h-[125px] flex items-center justify-center text-sm text-mata-ink/40 text-center px-4">Ainda não há vendas atribuídas a vendedores.</div>
           ) : (
-            <div className="h-[165px]">
+            <div className="h-[195px]">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={vendasPorVendedor} layout="vertical" margin={{ top: 0, right: 12, left: 8, bottom: 0 }} barCategoryGap="18%">
                   <CartesianGrid strokeDasharray="3 3" stroke="#EDE3D3" horizontal={false} />
@@ -472,7 +581,7 @@ export default function Dashboard() {
           )}
         </div>
 
-        <div className="bg-white/90 border border-[#eadfce] rounded-2xl p-4 shadow-[0_10px_30px_rgba(77,45,18,0.05)] xl:h-[205px] overflow-hidden">
+        <div className="bg-white/90 border border-[#eadfce] rounded-2xl p-4 shadow-[0_10px_30px_rgba(77,45,18,0.05)] xl:h-[235px] overflow-hidden">
           <div className="flex items-center justify-between gap-2 mb-2">
             <div className="flex items-center gap-3">
               <span className="text-[#9A5B20] text-xl">◷</span>
@@ -515,6 +624,54 @@ export default function Dashboard() {
           </div>
         </div>
       </section>
+
+      {/* Modal com os retornos dos condicionais desta semana */}
+      {retornosAbertos && (
+        <div className="fixed inset-0 bg-[#1d120b]/45 backdrop-blur-[2px] flex items-center justify-center p-4 sm:p-6 z-50">
+          <div className="bg-[#fffdfa] border border-[#eadfce] rounded-2xl p-5 sm:p-6 w-full max-w-3xl max-h-[82vh] overflow-y-auto shadow-2xl space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h3 className="font-display text-xl text-mata-ink">↻ Retornos dos condicionais</h3>
+                <p className="text-xs text-mata-ink/50 mt-1">Condicionais com retorno previsto para esta semana.</p>
+              </div>
+              <button onClick={() => setRetornosAbertos(false)} className="text-mata-ink/45 hover:text-mata-ink text-sm">Fechar ✕</button>
+            </div>
+
+            {condicionaisRetornoSemana.length === 0 ? (
+              <p className="text-sm text-mata-ink/40 py-6 text-center">Nenhum condicional com retorno previsto para esta semana.</p>
+            ) : (
+              <div className="space-y-2">
+                {condicionaisRetornoSemana.map((venda) => {
+                  const itens = itensPorVenda[venda.id] || []
+                  const total = itens.reduce((s, i) => s + Number(i.quantidade || 0) * Number(i.valor_unitario || 0), 0)
+                  return (
+                    <div key={venda.id} className="border border-[#eadfce] rounded-xl bg-white px-4 py-3 flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="font-medium text-sm text-mata-ink truncate">{venda.contatos?.nome || contatosPorId[venda.contato_id]?.nome || 'Cliente não informado'}</p>
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-mata-ink/55 mt-1">
+                          <span>Retorno: <strong className="text-mata-ink/75">{formatarData(venda.dataRetorno)}</strong></span>
+                          <span>{itens.reduce((s, i) => s + Number(i.quantidade || 0), 0)} item(ns)</span>
+                          <span>{formatarMoeda(total)}</span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRetornosAbertos(false)
+                          navigate('/vendas', { state: { editarVendaId: venda.id } })
+                        }}
+                        className="shrink-0 rounded-lg bg-[#B8782D] px-3 py-2 text-xs font-medium text-white hover:brightness-105 transition"
+                      >
+                        Ver venda →
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Modal com a lista detalhada da categoria clicada */}
       {categoriaAberta && (
