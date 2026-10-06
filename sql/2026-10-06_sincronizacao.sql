@@ -1,0 +1,12 @@
+-- Migração de sincronização do CRM LuzDaMata.
+-- O arquivo sql/schema.sql contém a versão canônica completa.
+-- Execute schema.sql no SQL Editor do Supabase para sincronizar
+-- uma instalação existente.
+--
+-- Principais mudanças:
+-- 1. Schema sincronizado com os campos usados pelo React.
+-- 2. CRM compartilhado: todos os usuários autenticados veem/editam todo o banco.
+-- 3. vendedores e metas_mensais incluídos.
+-- 4. campos de produtos, vendas, itens e agenda incluídos.
+-- 5. Storage de fotos de produtos configurado.
+-- 6. função salvar_venda() preparada para persistência transacional.
