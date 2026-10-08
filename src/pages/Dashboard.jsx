@@ -61,15 +61,22 @@ export default function Dashboard() {
       catPorProduto[p.id] = p.categoria || 'Outros'
     })
 
-    const primeiroDiaMes = new Date()
-    primeiroDiaMes.setDate(1)
-    const mesISO = primeiroDiaMes.toISOString().slice(0, 10)
-    const { data: metaData } = await supabase
+    // Meta mensal: usa a data local do mês atual para evitar deslocamento de fuso.
+    const hojeMeta = new Date()
+    const mesISO = `${hojeMeta.getFullYear()}-${String(hojeMeta.getMonth() + 1).padStart(2, '0')}-01`
+
+    const { data: metaData, error: metaError } = await supabase
       .from('metas_mensais')
       .select('valor_meta')
       .eq('mes', mesISO)
       .maybeSingle()
-    setMetaMes(metaData?.valor_meta ?? null)
+
+    if (metaError) {
+      console.error('Erro ao carregar meta mensal:', metaError)
+      setMetaMes(null)
+    } else {
+      setMetaMes(metaData?.valor_meta != null ? Number(metaData.valor_meta) : null)
+    }
 
     const agrupado = {}
     ;(iData || []).forEach((i) => {

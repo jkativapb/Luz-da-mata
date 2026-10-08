@@ -391,6 +391,9 @@ export default function Vendas() {
       nf_cancelada: Boolean(form.nf_cancelada),
     }
 
+    // Monta os itens usando somente colunas que existem em itens_venda.
+    // Não enviamos campos de controle de estoque/quantidade que não fazem parte
+    // da estrutura confirmada da tabela.
     const itensParaSalvar = itensValidos.map((i) => ({
       produto_id: i.produto_id || null,
       produto_nome: i.produto_nome,
@@ -399,41 +402,89 @@ export default function Vendas() {
       preco_base: Number(i.preco_base) || Number(i.valor_unitario) || 0,
       desconto_percentual: Number(i.desconto_percentual) || 0,
       tipo_cliente: i.tipo_cliente || 'cliente_final',
-      quantidade_vendida: Number(i.quantidade_vendida || 0),
-      quantidade_devolvida: Number(i.quantidade_devolvida || 0),
     }))
 
-    // Persistência transacional: venda e itens são gravados como uma única operação.
-    const { data: vendaId, error: erroTransacao } = await supabase.rpc('salvar_venda', {
-      p_venda: { ...payloadVenda, ...(form.id ? { id: form.id } : {}) },
-      p_itens: itensParaSalvar,
-    })
+    // Grava a venda diretamente e, em seguida, grava os itens.
+    // Isso elimina a dependência da RPC salvar_venda, que estava causando
+    // conflito com a estrutura real de itens_venda.
+    let vendaId = form.id || null
+    let vendaSalva = null
 
-    if (erroTransacao || !vendaId) {
-      console.error('Erro transacional ao salvar venda:', erroTransacao)
-      alert(`Não foi possível salvar a venda: ${erroTransacao?.message || 'erro desconhecido'}`)
-      return
+    if (form.id) {
+      const { data, error } = await supabase
+        .from('vendas')
+        .update(payloadVenda)
+        .eq('id', form.id)
+        .select('*, contatos(nome)')
+        .single()
+
+      if (error || !data) {
+        console.error('Erro ao atualizar venda:', error)
+        alert(`Não foi possível atualizar a venda: ${error?.message || 'erro desconhecido'}`)
+        return
+      }
+      vendaSalva = data
+    } else {
+      const { data, error } = await supabase
+        .from('vendas')
+        .insert(payloadVenda)
+        .select('*, contatos(nome)')
+        .single()
+
+      if (error || !data) {
+        console.error('Erro ao criar venda:', error)
+        alert(`Não foi possível salvar a venda: ${error?.message || 'erro desconhecido'}`)
+        return
+      }
+      vendaId = data.id
+      vendaSalva = data
     }
 
-    const { data: vendaSalva, error: erroBuscarVenda } = await supabase
-      .from('vendas')
-      .select('*, contatos(nome)')
-      .eq('id', vendaId)
-      .single()
+    // Em edição, guardamos os IDs antigos. Os novos itens são inseridos
+    // primeiro; somente depois os antigos são removidos. Assim, se a
+    // inserção dos novos itens falhar, os itens antigos continuam preservados.
+    let itensAntigos = []
+    if (form.id) {
+      const { data, error } = await supabase
+        .from('itens_venda')
+        .select('id')
+        .eq('venda_id', vendaId)
 
-    if (erroBuscarVenda || !vendaSalva) {
-      alert(`A venda foi gravada, mas não foi possível atualizar a tela: ${erroBuscarVenda?.message || 'erro desconhecido'}`)
-      return
+      if (error) {
+        alert(`A venda foi atualizada, mas não foi possível preparar os itens: ${error.message}`)
+        return
+      }
+      itensAntigos = data || []
     }
+
+    const itensComVenda = itensParaSalvar.map((item) => ({
+      ...item,
+      venda_id: vendaId,
+    }))
 
     const { data: itensSalvos, error: erroItens } = await supabase
       .from('itens_venda')
+      .insert(itensComVenda)
       .select('*')
-      .eq('venda_id', vendaId)
 
     if (erroItens) {
-      alert(`A venda foi gravada, mas os itens não puderam ser carregados: ${erroItens.message}`)
+      console.error('Erro ao salvar itens da venda:', erroItens)
+      alert(`Não foi possível salvar os itens da venda: ${erroItens.message}`)
       return
+    }
+
+    if (itensAntigos.length) {
+      const idsAntigos = itensAntigos.map((item) => item.id)
+      const { error: erroRemoverAntigos } = await supabase
+        .from('itens_venda')
+        .delete()
+        .in('id', idsAntigos)
+
+      if (erroRemoverAntigos) {
+        console.error('Erro ao remover itens antigos:', erroRemoverAntigos)
+        alert(`A venda foi salva, mas não foi possível substituir os itens antigos: ${erroRemoverAntigos.message}`)
+        return
+      }
     }
 
     setVendas((lista) => {
@@ -445,7 +496,7 @@ export default function Vendas() {
     setForm(vendaVazia)
     setSituacaoPagamento('pago')
     setParcelamento('1x')
-    setItensForm([{ produto_id: '', produto_nome: '', quantidade: 1, valor_unitario: 0, preco_base: 0, desconto_percentual: 0, tipo_cliente: 'cliente_final', quantidade_vendida: 0, quantidade_devolvida: 0 }])
+    setItensForm([{ produto_id: '', produto_nome: '', quantidade: 1, valor_unitario: 0, preco_base: 0, desconto_percentual: 0, tipo_cliente: 'cliente_final' }])
     setModoPagamento(false)
     setMostrarForm(false)
     setVendaSelecionada(vendaSalva)
@@ -604,19 +655,20 @@ export default function Vendas() {
 
   // Vendas com NF cancelada continuam no histórico, mas não entram nos totais.
   const vendasAtivas = vendas.filter((v) => !v.nf_cancelada)
+  const vendasEfetivadas = vendasAtivas.filter((v) => v.situacao_pagamento !== 'condicional')
 
-  const totalGeral = vendasAtivas.reduce((s, v) => s + totalVenda(v), 0)
-  const ticketMedio = vendasAtivas.length ? totalGeral / vendasAtivas.length : 0
+  const totalGeral = vendasEfetivadas.reduce((s, v) => s + totalVenda(v), 0)
+  const ticketMedio = vendasEfetivadas.length ? totalGeral / vendasEfetivadas.length : 0
 
   const inicioMes = new Date()
   inicioMes.setDate(1)
   inicioMes.setHours(0, 0, 0, 0)
 
-  const totalMes = vendasAtivas
+  const totalMes = vendasEfetivadas
     .filter((v) => paraDataLocal(v.data_venda) >= inicioMes)
     .reduce((s, v) => s + totalVenda(v), 0)
 
-  const itensVendidos = vendasAtivas.reduce(
+  const itensVendidos = vendasEfetivadas.reduce(
     (s, v) =>
       s +
       (itensPorVenda[v.id] || []).reduce(
@@ -627,7 +679,7 @@ export default function Vendas() {
   )
 
   const hoje = hojeLocal()
-  const vendasDoMes = vendasAtivas.filter((v) => paraDataLocal(v.data_venda) >= inicioMes).length
+  const vendasDoMes = vendasEfetivadas.filter((v) => paraDataLocal(v.data_venda) >= inicioMes).length
 
   // Valor em condicional: vendas cuja situação é "condicional" (ainda sem pagamento definido).
   const valorCondicional = vendasAtivas
@@ -729,7 +781,7 @@ export default function Vendas() {
       const mesAtual = agora.getMonth() - (5 - index)
       const dataBase = new Date(agora.getFullYear(), mesAtual, 1)
 
-      const total = vendasAtivas.reduce((s, v) => {
+      const total = vendasEfetivadas.reduce((s, v) => {
         const data = paraDataLocal(v.data_venda)
         if (
           data.getMonth() === dataBase.getMonth() &&
@@ -754,7 +806,7 @@ export default function Vendas() {
 
   const formasPagamento = useMemo(() => {
     const contagem = {}
-    vendasAtivas.forEach((v) => {
+    vendasEfetivadas.forEach((v) => {
       const nome = v.forma_pagamento || 'Não informado'
       contagem[nome] = (contagem[nome] || 0) + 1
     })
