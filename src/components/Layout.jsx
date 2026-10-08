@@ -56,7 +56,7 @@ export default function Layout() {
   const dataHoje = dataDeHojeFormatada()
 
   return (
-    <div className="h-screen bg-mata-cream flex overflow-hidden">
+    <div className="h-screen w-screen max-w-[100vw] bg-mata-cream block md:flex overflow-hidden">
       {/* Desktop mantém o menu lateral. No celular ele vira uma gaveta. */}
       <aside
         className={`w-60 text-mata-cream flex flex-col shrink-0 relative overflow-hidden bg-mata-bark
@@ -114,8 +114,8 @@ export default function Layout() {
         />
       )}
 
-      <div className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden">
-        <header className="min-h-14 md:h-12 shrink-0 border-b border-mata-sand bg-mata-cream flex items-center justify-between px-4 md:px-6 gap-3 relative z-40">
+      <div className="w-full min-w-0 flex flex-col min-h-0 overflow-hidden md:flex-1">
+        <header className="min-h-14 md:h-12 w-full shrink-0 border-b border-mata-sand bg-mata-cream flex items-center justify-between px-3 md:px-6 gap-3 relative z-40">
           <div className="flex items-center gap-3 md:gap-4 min-w-0">
             <button
               type="button"
@@ -191,8 +191,8 @@ export default function Layout() {
           }}
         >
           {pageHeader.title && (
-            <div className="min-h-[72px] md:h-[85px] shrink-0 px-4 md:px-6 py-3 md:py-0 flex flex-wrap items-center gap-3 md:gap-4 relative overflow-hidden bg-transparent">
-              <div className="relative z-10 min-w-0 shrink-0">
+            <div className="min-h-[72px] md:h-[85px] shrink-0 w-full px-3 md:px-6 py-3 md:py-0 flex flex-wrap items-center gap-3 md:gap-4 relative overflow-hidden bg-transparent">
+              <div className="relative z-10 min-w-0 shrink-0 max-w-full">
                 <h2 className="font-display text-[28px] md:text-[32px] lg:text-[38px] text-mata-ink leading-tight">
                   {pageHeader.title}
                 </h2>
@@ -214,7 +214,7 @@ export default function Layout() {
               </div>
             </div>
           )}
-          <main className="flex-1 min-w-0 min-h-0 overflow-y-auto overflow-x-hidden bg-transparent px-3 md:px-4 lg:px-[24px] pb-4">
+          <main className="flex-1 min-w-0 w-full min-h-0 overflow-y-auto overflow-x-hidden bg-transparent px-3 md:px-4 lg:px-[24px] pb-4">
           <Outlet context={{ setPageHeader }} />
           </main>
           <footer className="hidden md:flex h-8 shrink-0 bg-[#fbf7f0]/8 items-center justify-center text-xs text-mata-ink/60 relative overflow-hidden">
