@@ -25,6 +25,8 @@ export default function Dashboard() {
   const [metaMes, setMetaMes] = useState(null)
   const [categoriaAberta, setCategoriaAberta] = useState(null) // 'em_dia' | 'atencao' | 'precisa_contato' | null
   const [retornosAbertos, setRetornosAbertos] = useState(false)
+  const [condicionaisAbertos, setCondicionaisAbertos] = useState(false)
+  const [contasModal, setContasModal] = useState(null) // 'recebido' | 'vencer' | 'atraso' | null
 
   useEffect(() => {
     carregar()
@@ -37,7 +39,7 @@ export default function Dashboard() {
       actions: (
         <button
           onClick={() => exportarParaExcel({ contatos, visitas, vendas, itensPorVenda })}
-          className="inline-flex items-center gap-2 bg-gradient-to-r from-[#9A5B20] to-[#B8782D] text-white px-5 py-2.5 rounded-xl text-sm font-medium shadow-[0_8px_20px_rgba(154,91,32,0.20)] hover:brightness-105 transition"
+          className="inline-flex items-center gap-2 bg-gradient-to-r from-[#9A5B20] to-[#B8782D] text-white px-5 py-2.5 rounded-xl text-[9px] font-medium shadow-[0_8px_20px_rgba(154,91,32,0.20)] hover:brightness-105 transition"
         >
           <span aria-hidden="true">⇩</span>
           Exportar para Excel
@@ -92,7 +94,7 @@ export default function Dashboard() {
     setCarregando(false)
   }
 
-  if (carregando) return <div className="p-8 text-mata-ink/50 text-sm">Carregando…</div>
+  if (carregando) return <div className="p-8 text-mata-ink/50 text-[9px]">Carregando…</div>
 
   // -------- filtro base: relacionamento considera SÓ contatos ativos hoje --------
   const contatosAtivos = contatos.filter((c) => c.ativo !== false)
@@ -148,7 +150,7 @@ export default function Dashboard() {
   }
 
   const hoje = new Date()
-  const inicioMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1)
+  const mesAtual = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`
 
   let rendaAcumulada = 0
   let rendaMes = 0
@@ -158,7 +160,7 @@ export default function Dashboard() {
   const vendasPorMes = {}
   const vendedorTotais = {}
 
-  vendasParaIndicadores.forEach((v) => {
+  vendasParaIndicadores.filter((v) => v.nf_cancelada !== true).forEach((v) => {
     const totalVendaAtual = totalVenda(v)
     const dataVenda = dataLocal(v.data_venda)
 
@@ -167,8 +169,9 @@ export default function Dashboard() {
     if (v.situacao_pagamento !== 'condicional') {
       rendaAcumulada += totalVendaAtual
 
-      // Renda do mês: vendas efetivadas realizadas no mês atual.
-      if (dataVenda && dataVenda >= inicioMes) {
+      // Renda do mês: somente vendas efetivadas cuja data pertence ao mês atual.
+      // Comparar ano e mês evita incluir datas futuras ou de outros períodos.
+      if (dataVenda && chaveMes(v.data_venda) === mesAtual) {
         rendaMes += totalVendaAtual
       }
 
@@ -181,12 +184,8 @@ export default function Dashboard() {
       vendedorTotais[nomeVendedor].vendas += 1
     }
 
-    // Financeiro separado por situação de pagamento.
-    if (v.situacao_pagamento === 'pago') {
-      totalRecebido += totalVendaAtual
-    } else if (v.situacao_pagamento === 'a_receber') {
-      totalAReceber += totalVendaAtual
-    } else if (v.situacao_pagamento === 'condicional') {
+    // O total de condicionais é separado do financeiro efetivado.
+    if (v.situacao_pagamento === 'condicional') {
       totalCondicional += totalVendaAtual
     }
   })
@@ -206,7 +205,7 @@ export default function Dashboard() {
   // -------- vendas por categoria de produto (quantidade de itens) --------
   const categoriaQtd = {}
   let totalItensVendidos = 0
-  vendasParaIndicadores.forEach((v) => {
+  vendasParaIndicadores.filter((v) => v.nf_cancelada !== true).forEach((v) => {
     const itens = itensPorVenda[v.id] || []
     itens.forEach((i) => {
       const cat = (i.produto_id && categoriaPorProduto[i.produto_id]) || 'Outros'
@@ -226,7 +225,7 @@ export default function Dashboard() {
   const percentualMeta = metaMes ? Math.min(100, Math.round((rendaMes / metaMes) * 100)) : null
 
   // -------- vendas condicionais --------
-  const vendasCondicionais = vendasParaIndicadores.filter((v) => v.situacao_pagamento === 'condicional')
+  const vendasCondicionais = vendasParaIndicadores.filter((v) => v.situacao_pagamento === 'condicional' && v.nf_cancelada !== true)
   const produtosEmAvaliacao = vendasCondicionais.reduce((total, v) => {
     const itens = itensPorVenda[v.id] || []
     return total + itens.reduce((s, i) => s + Number(i.quantidade || 0), 0)
@@ -243,27 +242,110 @@ export default function Dashboard() {
 
   const retornosSemana = condicionaisRetornoSemana.length
   // -------- contas a receber / inadimplência --------
+  // As parcelas são a fonte de verdade para o financeiro. Quando a venda
+  // possui pagamento por parcela, usamos a situação/data de cada parcela.
+  // Para vendas antigas sem esses campos, fazemos fallback para os campos da venda.
+  function parcelasFinanceiras(venda) {
+    let parcelas = Array.isArray(venda.parcelas_json)
+      ? venda.parcelas_json
+      : (Array.isArray(venda.parcelas) ? venda.parcelas : [])
+
+    if (!parcelas.length && (venda.data_vencimento || venda.situacao_pagamento === 'pago')) {
+      parcelas = [{
+        valor: Number(venda.total || 0) || totalVenda(venda),
+        vencimento: venda.data_vencimento || null,
+        data_pagamento: venda.data_pagamento || null,
+      }]
+    }
+
+    const vendaPaga = venda.situacao_pagamento === 'pago'
+
+    return parcelas.map((parcela, index) => {
+      const statusTexto = String(parcela.status || parcela.situacao || '').toLowerCase()
+      const temCampo = (campo) => Object.prototype.hasOwnProperty.call(parcela, campo)
+      const dataPagamento = parcela.data_pagamento || parcela.dataPagamento || parcela.data_recebimento || parcela.dataRecebimento || null
+
+      // A tela de Vendas é a fonte de verdade. Se a parcela possui um
+      // checkbox/flag de pagamento, respeitamos exatamente o valor dele.
+      // Não criamos nem alteramos esse pagamento no Dashboard.
+      const possuiFlagPagamento = temCampo('pago') || temCampo('recebido') || temCampo('quitado')
+      const flagPaga = temCampo('pago') ? parcela.pago === true
+        : temCampo('recebido') ? parcela.recebido === true
+          : temCampo('quitado') ? parcela.quitado === true
+            : null
+
+      const possuiStatusPagamento = ['pago', 'paid', 'recebido', 'quitado', 'a_receber', 'pendente', 'aberto', 'em_aberto', 'atrasado'].includes(statusTexto)
+      const paga = possuiFlagPagamento
+        ? flagPaga
+        : possuiStatusPagamento
+          ? ['pago', 'paid', 'recebido', 'quitado'].includes(statusTexto)
+          : Boolean(dataPagamento) || vendaPaga
+
+      // A data também vem da parcela registrada na tela de Vendas.
+      // O campo da venda só é usado no fallback de vendas antigas sem
+      // controle individual de parcelas.
+      const dataPagamentoFinal = dataPagamento || (vendaPaga && parcelas.length === 1 ? venda.data_pagamento : null)
+      const vencimento = dataLocal(parcela.vencimento || parcela.data_vencimento || venda.data_vencimento)
+      const valor = Number(parcela.valor || parcela.valor_parcela || parcela.total || 0)
+
+      return {
+        venda: venda,
+        parcela,
+        index,
+        valor,
+        vencimento,
+        paga,
+        dataPagamento: dataLocal(dataPagamentoFinal),
+      }
+    }).filter((p) => p.valor > 0)
+  }
+
   const contasReceber = []
+  const contasRecebidas = []
+
   vendasParaIndicadores
-    .filter((v) => v.situacao_pagamento === 'a_receber' && v.nf_cancelada !== true)
+    .filter((v) => v.situacao_pagamento !== 'condicional' && v.nf_cancelada !== true)
     .forEach((v) => {
       const cliente = contatosPorId[v.contato_id]?.nome || v.contatos?.nome || 'Cliente não informado'
-      let parcelas = Array.isArray(v.parcelas_json) ? v.parcelas_json : (Array.isArray(v.parcelas) ? v.parcelas : [])
-      if (!parcelas.length && v.data_vencimento) parcelas = [{ valor: Number(v.total || 0), vencimento: v.data_vencimento }]
-      parcelas.forEach((parcela, index) => {
-        const vencimento = dataLocal(parcela.vencimento)
-        const valor = Number(parcela.valor || 0)
-        if (valor > 0 && vencimento) contasReceber.push({ venda: v, cliente, parcela, index, valor, vencimento })
+      parcelasFinanceiras(v).forEach((item) => {
+        const registro = { ...item, cliente }
+
+        if (item.paga) {
+          contasRecebidas.push(registro)
+        } else {
+          // Toda parcela não marcada como paga permanece em aberto,
+          // independentemente do status geral da venda.
+          contasReceber.push(registro)
+        }
       })
     })
 
-  const contasEmAtraso = contasReceber.filter((c) => c.vencimento < hojeData)
-  const contasAVencer = contasReceber.filter((c) => c.vencimento >= hojeData)
+  const contasEmAtraso = contasReceber.filter((c) => c.vencimento && c.vencimento < hojeData)
+  const contasAVencer = contasReceber.filter((c) => c.vencimento && c.vencimento >= hojeData)
   const totalEmAtraso = contasEmAtraso.reduce((s, c) => s + c.valor, 0)
   const totalAVencer = contasAVencer.reduce((s, c) => s + c.valor, 0)
-  const recebidoNoMes = vendasParaIndicadores
-    .filter((v) => v.situacao_pagamento === 'pago' && dataLocal(v.data_pagamento || v.data_venda)?.getMonth() === hoje.getMonth() && dataLocal(v.data_pagamento || v.data_venda)?.getFullYear() === hoje.getFullYear())
-    .reduce((total, v) => total + (itensPorVenda[v.id] || []).reduce((s, i) => s + Number(i.quantidade || 0) * Number(i.valor_unitario || 0), 0), 0)
+
+  // Os cards Recebido e A receber usam exatamente a mesma fonte da listagem
+  // de parcelas abaixo, para que os valores dos cards e das listas coincidam.
+  totalRecebido = contasRecebidas.reduce((total, c) => total + c.valor, 0)
+  totalAReceber = contasReceber.reduce((total, c) => total + c.valor, 0)
+
+  // Recebido no mês = soma dos pagamentos cuja DATA DE PAGAMENTO está no mês atual.
+  const contasRecebidasNoMes = contasRecebidas.filter((c) => {
+    const data = c.dataPagamento
+    return data &&
+      data.getMonth() === hoje.getMonth() &&
+      data.getFullYear() === hoje.getFullYear()
+  })
+  const recebidoNoMes = contasRecebidasNoMes.reduce((total, c) => total + c.valor, 0)
+
+  const listaContasModal = contasModal === 'recebido'
+    ? contasRecebidasNoMes.sort((a, b) => (b.dataPagamento || 0) - (a.dataPagamento || 0))
+    : contasModal === 'vencer'
+      ? contasAVencer.sort((a, b) => a.vencimento - b.vencimento)
+      : contasModal === 'atraso'
+        ? contasEmAtraso.sort((a, b) => a.vencimento - b.vencimento)
+        : []
 
   // -------- relacionamento: último contato real do cadastro --------
   // O Dashboard deve usar a data registrada no cadastro do cliente como
@@ -388,256 +470,153 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="w-full pt-px pb-3 space-y-[1px]">
-      {/* Indicadores financeiros principais */}
-      <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-[5px]">
-        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px]">
-          <div className="w-9 h-9 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-lg shrink-0">◉</div>
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">Renda acumulada</p>
-            <p className="font-display text-xl lg:text-2xl text-mata-ink leading-tight mt-0.5 truncate">{formatarMoeda(rendaAcumulada)}</p>
+    <div className="w-full pt-px pb-1 space-y-0">
+      {/* QUADRO 1 — Vendas */}
+      <section className="grid grid-cols-1 xl:grid-cols-[1.15fr_0.85fr] gap-x-px gap-y-px mb-0">
+        <div className="bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-[8px] shadow-[0_10px_30px_rgba(77,45,18,0.05)]">
+          <div className="flex items-center gap-2 mb-[6px]">
+            <span className="text-[#9A5B20] text-[15px]">▥</span>
+            <h3 className="font-display text-[15px] text-mata-ink">Vendas</h3>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-px gap-y-2 mb-[6px]">
+            <div className="bg-[#f8f3e9] border border-[#eee2d0] rounded-xl px-3 py-2 flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-[#f0e2cc] text-[#9A5B20] flex items-center justify-center text-[17px] shrink-0">◉</div>
+              <div className="min-w-0"><p className="text-[9px] text-mata-ink/60">Vendas acumuladas</p><p className="font-display text-[15px] lg:text-[17px] text-mata-ink truncate">{formatarMoeda(rendaAcumulada)}</p></div>
+            </div>
+            <div className="bg-[#fcf5ec] border border-[#eee2d0] rounded-xl px-3 py-2 flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-[#f6e8d7] text-[#9A5B20] flex items-center justify-center text-[17px] shrink-0">▦</div>
+              <div className="min-w-0"><p className="text-[9px] text-mata-ink/60">Vendas do mês</p><p className="font-display text-[15px] lg:text-[17px] text-mata-ink truncate">{formatarMoeda(rendaMes)}</p></div>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center justify-between mb-[6px]"><h4 className="font-display text-[15px] text-mata-ink">Vendas por mês</h4><span className="text-[9px] text-mata-ink/50">Últimos 6 meses</span></div>
+              <div className="h-[142px] min-w-0">
+                <ResponsiveContainer width="100%" height="100%"><BarChart data={graficoMensal} margin={{ top: 8, right: 4, left: -14, bottom: 0 }}><CartesianGrid strokeDasharray="3 3" stroke="#EDE3D3" vertical={false} /><XAxis dataKey="mes" tick={{ fontSize: 10, fill: '#59483A' }} axisLine={{ stroke: '#D9C7AE' }} tickLine={false} /><YAxis tick={{ fontSize: 10, fill: '#59483A' }} width={48} axisLine={false} tickLine={false} /><Tooltip formatter={(v) => formatarMoeda(v)} /><Bar dataKey="total" fill="#A96A26" radius={[5, 5, 0, 0]} maxBarSize={36} /></BarChart></ResponsiveContainer>
+              </div>
+            </div>
+            <div className="min-w-0 lg:border-l lg:border-[#eadfce] lg:pl-4">
+              <div className="mb-[6px]"><h4 className="font-display text-[15px] text-mata-ink">Vendas por vendedor</h4><p className="text-[9px] text-mata-ink/50">Todos os períodos</p></div>
+              {vendasPorVendedor.length === 0 ? <div className="h-[142px] flex items-center justify-center text-[9px] text-mata-ink/45 text-center">Ainda não há vendas atribuídas a vendedores.</div> : <div className="h-[142px] min-w-0"><ResponsiveContainer width="100%" height="100%"><BarChart data={vendasPorVendedor} layout="vertical" margin={{ top: 2, right: 8, left: 0, bottom: 0 }} barCategoryGap="22%"><CartesianGrid strokeDasharray="3 3" stroke="#EDE3D3" horizontal={false} /><XAxis type="number" tick={{ fontSize: 10, fill: '#59483A' }} axisLine={{ stroke: '#D9C7AE' }} tickLine={false} /><YAxis type="category" dataKey="nome" width={78} tick={{ fontSize: 10, fill: '#59483A' }} axisLine={false} tickLine={false} /><Tooltip formatter={(v) => formatarMoeda(v)} labelFormatter={(label) => `Vendedor: ${label}`} /><Bar dataKey="total" name="Valor vendido" fill="#5C6E4A" radius={[0, 5, 5, 0]} maxBarSize={18} /></BarChart></ResponsiveContainer></div>}
+            </div>
           </div>
         </div>
 
-        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px]">
-          <div className="w-9 h-9 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-lg shrink-0">▥</div>
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">Renda do mês</p>
-            <p className="font-display text-xl lg:text-2xl text-mata-ink leading-tight mt-0.5 truncate">{formatarMoeda(rendaMes)}</p>
+        {/* QUADRO 2 — Contas a receber */}
+        <div className="bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-[8px] shadow-[0_10px_30px_rgba(77,45,18,0.05)]">
+          <div className="flex items-center justify-between gap-2 mb-[6px]"><div className="flex items-center gap-3"><span className="text-[#9A5B20] text-[17px]">◷</span><h3 className="font-display text-[15px] text-mata-ink">Contas a receber</h3></div><span className="text-[9px] text-mata-ink/50">Visão financeira</span></div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-px gap-y-2 mb-[6px]">
+            <button type="button" onClick={() => setContasModal('atraso')} className="text-left rounded-xl bg-red-50/80 border border-red-100 px-2.5 py-2 hover:shadow-md transition" title="Ver parcelas em atraso"><p className="text-[9px] text-red-700/75">Em atraso</p><p className="font-display text-[15px] text-red-700">{formatarMoeda(totalEmAtraso)}</p><p className="text-[9px] text-red-700/60">{contasEmAtraso.length} parcela(s) · ver lista ›</p></button>
+            <button type="button" onClick={() => setContasModal('vencer')} className="text-left rounded-xl bg-amber-50/80 border border-amber-100 px-2.5 py-2 hover:shadow-md transition" title="Ver parcelas a vencer"><p className="text-[9px] text-amber-700/75">A vencer</p><p className="font-display text-[15px] text-amber-700">{formatarMoeda(totalAVencer)}</p><p className="text-[9px] text-amber-700/60">{contasAVencer.length} parcela(s) · ver lista ›</p></button>
+            <button type="button" onClick={() => setContasModal('recebido')} className="text-left rounded-xl bg-green-50/80 border border-green-100 px-2.5 py-2 hover:shadow-md transition" title="Ver pagamentos recebidos no mês"><p className="text-[9px] text-green-700/75">Recebidos no mês</p><p className="font-display text-[15px] text-green-700">{formatarMoeda(recebidoNoMes)}</p><p className="text-[9px] text-green-700/60">{contasRecebidasNoMes.length} pagamento(s) · ver lista ›</p></button>
+          </div>
+          <div className="border-t border-[#eadfce] pt-2">
+            <h4 className="font-display text-[15px] text-mata-ink mb-1">Distribuição das parcelas</h4>
+            {(() => {
+              const distribuicaoContas = [{ nome: 'Recebidos no mês', valor: recebidoNoMes }, { nome: 'A vencer', valor: totalAVencer }, { nome: 'Em atraso', valor: totalEmAtraso }].filter((item) => item.valor > 0)
+              const totalDistribuicao = distribuicaoContas.reduce((soma, item) => soma + item.valor, 0)
+              return totalDistribuicao > 0 ? <div className="grid grid-cols-1 sm:grid-cols-[minmax(130px,0.85fr)_1fr] items-center gap-3"><div className="h-[122px] min-w-0"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={distribuicaoContas} dataKey="valor" nameKey="nome" innerRadius="54%" outerRadius="82%" paddingAngle={2} stroke="none">{distribuicaoContas.map((item, index) => <Cell key={item.nome} fill={item.nome === 'Recebidos no mês' ? '#5C6E4A' : item.nome === 'A vencer' ? '#C9A15A' : '#E76F6F'} />)}</Pie><Tooltip formatter={(v) => formatarMoeda(v)} /></PieChart></ResponsiveContainer></div><div className="space-y-1.5">{distribuicaoContas.map((item) => <div key={item.nome} className="flex items-center justify-between gap-2 text-[9px] border-b border-[#f0e7da] pb-2"><div className="flex items-center gap-2 min-w-0"><span className={`w-2.5 h-2.5 rounded-full shrink-0 ${item.nome === 'Recebidos no mês' ? 'bg-[#5C6E4A]' : item.nome === 'A vencer' ? 'bg-[#C9A15A]' : 'bg-[#E76F6F]'}`} /><span className="text-mata-ink/75">{item.nome}</span></div><div className="text-right shrink-0"><p className="font-medium text-mata-ink">{formatarMoeda(item.valor)}</p><p className="text-[10px] text-mata-ink/45">{Math.round(item.valor / totalDistribuicao * 100)}%</p></div></div>)}</div></div> : <div className="h-[122px] flex items-center justify-center text-[9px] text-mata-ink/45">Ainda não há parcelas financeiras para exibir.</div>
+            })()}
           </div>
         </div>
-
-        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px]">
-          <div className="w-9 h-9 rounded-xl bg-green-50 text-green-700 flex items-center justify-center text-lg shrink-0">✓</div>
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">Recebido</p>
-            <p className="font-display text-xl lg:text-2xl text-green-700 leading-tight mt-0.5 truncate">{formatarMoeda(totalRecebido)}</p>
-          </div>
-        </div>
-
-        <div className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px]">
-          <div className="w-9 h-9 rounded-xl bg-amber-50 text-amber-700 flex items-center justify-center text-lg shrink-0">◷</div>
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">A receber</p>
-            <p className="font-display text-xl lg:text-2xl text-amber-700 leading-tight mt-0.5 truncate">{formatarMoeda(totalAReceber)}</p>
-          </div>
-        </div>
-
-        <button
-          onClick={() => navigate('/vendas')}
-          className="group bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_8px_24px_rgba(77,45,18,0.05)] flex items-center gap-2 min-h-[64px] text-left hover:shadow-[0_10px_26px_rgba(77,45,18,0.08)] transition-all"
-        >
-          <div className="w-9 h-9 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-lg shrink-0">♧</div>
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] uppercase tracking-[0.06em] text-mata-ink/55 truncate">Condicionais</p>
-            <p className="font-display text-xl lg:text-2xl text-mata-ink leading-tight mt-0.5 truncate">{formatarMoeda(totalCondicional)}</p>
-          </div>
-        </button>
       </section>
 
-      {/* Giro de carteira + indicadores de condicionais — mesma linha */}
-      <section className="grid grid-cols-1 sm:grid-cols-5 gap-[5px]">
-        {['em_dia', 'atencao', 'precisa_contato'].map((cat) => {
-          const estilo = ESTILO_CATEGORIA[cat]
-          const icone = cat === 'em_dia' ? '♟' : cat === 'atencao' ? '!' : '☎'
-          const descricao =
-            cat === 'em_dia'
-              ? 'clientes ativos'
-              : cat === 'atencao'
-                ? 'sem compra recente'
-                : 'contatos pendentes'
-
-          return (
-            <button
-              key={cat}
-              onClick={() => setCategoriaAberta(cat)}
-              className="group text-left bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_7px_22px_rgba(77,45,18,0.04)] hover:shadow-[0_10px_26px_rgba(77,45,18,0.08)] transition-all flex items-center gap-2 min-h-[58px]"
-            >
-              <div className="w-9 h-9 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-base shrink-0">
-                {icone}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-[10px] uppercase tracking-[0.05em] text-mata-ink/55 flex items-center gap-1">
-                  <span>{estilo.emoji}</span>
-                  {LABEL_CATEGORIA[cat]}
-                </p>
-                <div className="flex items-baseline gap-1.5 mt-0.5">
-                  <p className={`font-display text-xl leading-none ${estilo.cor}`}>{porCategoria[cat].length}</p>
-                  <span className="text-[10px] text-mata-ink/55 truncate">{descricao}</span>
-                </div>
-              </div>
-              <span className="text-[#9A5B20] text-xl opacity-70 group-hover:translate-x-1 transition-transform">›</span>
-            </button>
-          )
-        })}
-
-        <button
-          onClick={() => setRetornosAbertos(true)}
-          className="group text-left bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_7px_22px_rgba(77,45,18,0.04)] hover:shadow-[0_10px_26px_rgba(77,45,18,0.08)] transition-all flex items-center gap-2 min-h-[58px]"
-        >
-          <div className="w-9 h-9 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-base shrink-0">▣</div>
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] uppercase tracking-[0.05em] text-mata-ink/55">Produtos em avaliação</p>
-            <p className="font-display text-xl leading-none text-mata-ink mt-0.5">{produtosEmAvaliacao}</p>
-          </div>
-          <span className="text-[#9A5B20] text-xl opacity-70 group-hover:translate-x-1 transition-transform">›</span>
-        </button>
-
-        <button
-          onClick={() => navigate('/vendas')}
-          className="group text-left bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_7px_22px_rgba(77,45,18,0.04)] hover:shadow-[0_10px_26px_rgba(77,45,18,0.08)] transition-all flex items-center gap-2 min-h-[58px]"
-        >
-          <div className="w-9 h-9 rounded-xl bg-[#f5ecdd] text-[#9A5B20] flex items-center justify-center text-base shrink-0">▣</div>
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] uppercase tracking-[0.05em] text-mata-ink/55">Retornos esta semana</p>
-            <p className="font-display text-xl leading-none text-mata-ink mt-0.5">{retornosSemana}</p>
-          </div>
-          <span className="text-[#9A5B20] text-xl opacity-70 group-hover:translate-x-1 transition-transform">›</span>
-        </button>
-      </section>
-
-      {/* Gráficos principais */}
-      <section className="grid grid-cols-1 xl:grid-cols-[642fr_587fr] gap-[5px]">
-        <div className="bg-white/90 border border-[#eadfce] rounded-2xl p-4 shadow-[0_10px_30px_rgba(77,45,18,0.05)] xl:h-[205px] flex flex-col">
-          <div className="flex items-center justify-between gap-2 mb-2">
-            <div className="flex items-center gap-3">
-              <span className="text-[#9A5B20] text-xl">▥</span>
-              <h3 className="font-display text-xl text-mata-ink">Vendas por mês</h3>
-            </div>
-            <span className="hidden sm:inline-flex border border-[#eadfce] rounded-xl px-2.5 py-1 text-[11px] text-mata-ink/65 bg-[#fbf7f0]">Últimos 6 meses</span>
-          </div>
-
-          <div className="flex-1 min-h-0">
-            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-              <BarChart data={graficoMensal} margin={{ top: 6, right: 6, left: 4, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#EDE3D3" vertical={false} />
-                <XAxis dataKey="mes" tick={{ fontSize: 11, fill: '#59483A' }} axisLine={{ stroke: '#D9C7AE' }} tickLine={false} />
-                <YAxis tick={{ fontSize: 11, fill: '#59483A' }} width={55} axisLine={false} tickLine={false} />
-                <Tooltip formatter={(v) => formatarMoeda(v)} />
-                <Bar dataKey="total" fill="#A96A26" radius={[6, 6, 0, 0]} maxBarSize={48} />
-              </BarChart>
-            </ResponsiveContainer>
+      {/* QUADROS 3 e 4 — Avaliação e relacionamento */}
+      <section className="grid grid-cols-1 xl:grid-cols-2 gap-x-2 gap-y-px mb-0">
+        <div className="bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-[7px] shadow-[0_10px_30px_rgba(77,45,18,0.05)]">
+          <div className="flex items-center gap-2 mb-[6px]"><span className="text-[#9A5B20] text-[17px]">♧</span><h3 className="font-display text-[15px] text-mata-ink">Vendas em avaliação</h3></div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-px gap-y-2">
+            <button type="button" onClick={() => setCondicionaisAbertos(true)} className="group text-left bg-[#fcf6ed] border border-[#eee0cc] rounded-xl p-2.5 hover:shadow-md transition"><p className="text-[9px] text-mata-ink/60">Vendas condicionais</p><p className="font-display text-[17px] text-mata-ink mt-1">{formatarMoeda(totalCondicional)}</p><p className="text-[9px] text-mata-ink/50">Em avaliação <span className="text-[#9A5B20]">›</span></p></button>
+            <button type="button" onClick={() => setCondicionaisAbertos(true)} className="group text-left bg-white/70 border border-[#eee0cc] rounded-xl p-2.5 hover:shadow-md transition"><p className="text-[9px] text-mata-ink/60">Produtos em avaliação</p><p className="font-display text-[17px] text-mata-ink mt-1">{produtosEmAvaliacao}</p><p className="text-[9px] text-mata-ink/50">Produtos <span className="text-[#9A5B20]">›</span></p></button>
+            <button type="button" onClick={() => setRetornosAbertos(true)} className="group text-left bg-white/70 border border-[#eee0cc] rounded-xl p-2.5 hover:shadow-md transition"><p className="text-[9px] text-mata-ink/60">Retornos da semana</p><p className="font-display text-[17px] text-mata-ink mt-1">{retornosSemana}</p><p className="text-[9px] text-mata-ink/50">Retornos previstos <span className="text-[#9A5B20]">›</span></p></button>
           </div>
         </div>
-
-        <div className="bg-white/90 border border-[#eadfce] rounded-2xl p-4 shadow-[0_10px_30px_rgba(77,45,18,0.05)] xl:h-[205px] flex flex-col">
-          <div className="flex items-center justify-between gap-2 mb-2">
-            <div className="flex items-center gap-3">
-              <span className="text-[#9A5B20] text-xl">◎</span>
-              <h3 className="font-display text-xl text-mata-ink">Meta x realizado</h3>
-            </div>
-            <span className="hidden sm:inline-flex border border-[#eadfce] rounded-xl px-2.5 py-1 text-[11px] text-mata-ink/65 bg-[#fbf7f0]">
-              {new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}
-            </span>
+        <div className="bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-[7px] shadow-[0_10px_30px_rgba(77,45,18,0.05)]">
+          <div className="flex items-center gap-2 mb-[6px]"><span className="text-[#9A5B20] text-[17px]">♟</span><h3 className="font-display text-[15px] text-mata-ink">Relacionamento</h3></div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-px gap-y-2">
+            {['em_dia', 'atencao', 'precisa_contato'].map((cat) => {
+              const estilo = ESTILO_CATEGORIA[cat]
+              const descricao = cat === 'em_dia' ? 'clientes ativos' : cat === 'atencao' ? 'sem compra recente' : 'contatos pendentes'
+              return <button key={cat} type="button" onClick={() => setCategoriaAberta(cat)} className="group text-left bg-white/75 border border-[#eadfce] rounded-xl p-2.5 hover:shadow-md transition"><p className="text-[9px] text-mata-ink/60 flex items-center gap-1"><span>{estilo.emoji}</span>{LABEL_CATEGORIA[cat]}</p><p className={`font-display text-[21px] mt-1 ${estilo.cor}`}>{porCategoria[cat].length}</p><p className="text-[9px] text-mata-ink/50">{descricao} <span className="text-[#9A5B20]">›</span></p></button>
+            })}
           </div>
+        </div>
+      </section>
 
-          {metaMes === null ? (
-            <div className="flex-1 flex items-center justify-center text-sm text-mata-ink/40 text-center px-4">
+      {/* QUADRO 5 — Meta x realizado */}
+      <section className="bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-[7px] shadow-[0_10px_30px_rgba(77,45,18,0.05)] mb-1">
+        <div className="flex items-center justify-between gap-3 mb-0"><div className="flex items-center gap-3"><span className="text-[#9A5B20] text-[17px]">◎</span><h3 className="font-display text-[15px] text-mata-ink">Meta x realizado</h3></div><span className="border border-[#eadfce] rounded-xl px-2.5 py-1 text-[9px] text-mata-ink/65 bg-[#fbf7f0]">{new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}</span></div>
+        {metaMes === null ? <div className="py-5 text-[9px] text-mata-ink/45 text-center">Meta não definida para este mês. Cadastre a meta mensal nas configurações do negócio.</div> : <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr_1fr_105px] gap-1.5 items-center">
+          <div className="bg-[#fcf6ed] border border-[#eee0cc] rounded-xl p-2"><p className="text-[9px] text-mata-ink/60">Meta do mês</p><p className="font-display text-[17px] lg:text-[21px] text-mata-ink mt-1">{formatarMoeda(metaMes)}</p></div>
+          <div className="bg-white/70 border border-[#eee0cc] rounded-xl p-2"><p className="text-[9px] text-mata-ink/60">Realizado no mês</p><p className="font-display text-[17px] lg:text-[21px] text-mata-ink mt-1">{formatarMoeda(rendaMes)}</p></div>
+          <div className="bg-[#fcf6ed] border border-[#eee0cc] rounded-xl p-2"><p className="text-[9px] text-mata-ink/60">Falta para a meta</p><p className="font-display text-[17px] lg:text-[21px] text-[#9A5B20] mt-1">{formatarMoeda(Math.max(0, metaMes - rendaMes))}</p><div className="h-2 bg-[#eee4d5] rounded-full mt-3 overflow-hidden"><div className="h-full bg-gradient-to-r from-[#8d521e] to-[#c18a3d] rounded-full" style={{ width: `${percentualMeta}%` }} /></div></div>
+          <div className="flex flex-col items-center justify-center rounded-full border-[8px] border-[#eee4d5] w-[92px] h-[92px] mx-auto relative"><div className="absolute inset-[-8px] rounded-full border-[8px] border-transparent border-t-[#9A5B20]" style={{ transform: `rotate(${Math.min(100, percentualMeta) * 3.6}deg)` }} /><p className="font-display text-[21px] text-[#9A5B20]">{percentualMeta}%</p><p className="text-[9px] text-mata-ink/60 text-center">da meta alcançada</p></div>
+        </div>}
+      </section>
+
+      {/* Modal com a listagem de todas as vendas condicionais */}
+      {condicionaisAbertos && (
+        <div className="fixed inset-0 bg-[#1d120b]/45 backdrop-blur-[2px] flex items-center justify-center p-4 sm:p-6 z-50">
+          <div className="bg-[#fffdfa] border border-[#eadfce] rounded-2xl p-5 sm:p-6 w-full max-w-4xl max-h-[86vh] overflow-y-auto shadow-2xl space-y-4">
+            <div className="flex items-center justify-between gap-4">
               <div>
-                <p>Meta não definida para este mês.</p>
-                <p className="mt-1">Cadastre em <code className="text-xs bg-mata-sand/50 px-1 rounded">metas_mensais</code> no Supabase.</p>
+                <h3 className="font-display text-[17px] text-mata-ink">♧ Vendas condicionais <span className="text-mata-ink/40 text-[9px] font-sans">({vendasCondicionais.length})</span></h3>
+                <p className="text-[9px] text-mata-ink/50 mt-1">Clientes e produtos que estão em avaliação.</p>
               </div>
+              <button type="button" onClick={() => setCondicionaisAbertos(false)} className="text-mata-ink/45 hover:text-mata-ink text-[9px] shrink-0">Fechar ✕</button>
             </div>
-          ) : (
-            <div className="flex-1 grid grid-cols-1 sm:grid-cols-[1fr_110px] gap-2 items-center min-h-0">
-              <div className="grid grid-cols-2 gap-5 h-[105px] items-end px-1">
-                <div className="h-full flex flex-col justify-end items-center gap-1.5">
-                  <p className="font-display text-base text-mata-ink">{formatarMoeda(metaMes)}</p>
-                  <div className="w-full max-w-[62px] bg-[#e9ddcb] rounded-t-lg" style={{ height: '45%' }} />
-                  <p className="text-[11px] text-mata-ink/60">Meta</p>
-                </div>
-                <div className="h-full flex flex-col justify-end items-center gap-1.5">
-                  <p className="font-display text-base text-mata-ink">{formatarMoeda(rendaMes)}</p>
-                  <div
-                    className="w-full max-w-[62px] bg-gradient-to-t from-[#8d521e] to-[#b97a2e] rounded-t-lg"
-                    style={{ height: `${Math.max(5, Math.min(45, (rendaMes / metaMes) * 45))}%` }}
-                  />
-                  <p className="text-[11px] text-mata-ink/60">Realizado</p>
-                </div>
+
+            {vendasCondicionais.length === 0 ? (
+              <p className="text-[9px] text-mata-ink/45 py-8 text-center">Nenhuma venda condicional registrada.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-[9px] min-w-[680px]">
+                  <thead className="text-mata-ink/50 text-[10px] uppercase tracking-wide">
+                    <tr className="border-b border-[#eadfce]">
+                      <th className="text-left py-2.5 pr-3">Cliente</th>
+                      <th className="text-left py-2.5 pr-3">Data da venda</th>
+                      <th className="text-left py-2.5 pr-3">Retorno previsto</th>
+                      <th className="text-left py-2.5 pr-3">Itens</th>
+                      <th className="text-right py-2.5 pr-3">Total</th>
+                      <th className="text-right py-2.5">Ação</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {vendasCondicionais
+                      .slice()
+                      .sort((a, b) => String(a.data_retorno_condicional || a.data_retorno || '9999-12-31').localeCompare(String(b.data_retorno_condicional || b.data_retorno || '9999-12-31')))
+                      .map((venda) => {
+                        const itens = itensPorVenda[venda.id] || []
+                        const quantidade = itens.reduce((s, item) => s + Number(item.quantidade || 0), 0)
+                        return (
+                          <tr key={venda.id} className="border-b border-[#eadfce]/70">
+                            <td className="py-3 pr-3 font-medium text-mata-ink">{venda.contatos?.nome || contatosPorId[venda.contato_id]?.nome || 'Cliente não informado'}</td>
+                            <td className="py-3 pr-3 text-mata-ink/70">{formatarData(venda.data_venda)}</td>
+                            <td className="py-3 pr-3 text-mata-ink/70">{(venda.data_retorno_condicional || venda.data_retorno) ? formatarData(venda.data_retorno_condicional || venda.data_retorno) : '—'}</td>
+                            <td className="py-3 pr-3 text-mata-ink/70">{quantidade}</td>
+                            <td className="py-3 pr-3 text-right font-medium text-mata-ink">{formatarMoeda(totalVenda(venda))}</td>
+                            <td className="py-3 text-right">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCondicionaisAbertos(false)
+                                  navigate('/vendas', { state: { editarVendaId: venda.id } })
+                                }}
+                                className="text-[#9A5B20] hover:underline whitespace-nowrap"
+                              >
+                                Ver venda →
+                              </button>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                  </tbody>
+                </table>
               </div>
-
-              <div className="border-l border-[#eadfce] pl-3 text-center sm:text-left">
-                <p className="font-display text-3xl text-[#9A5B20] leading-none">{percentualMeta}%</p>
-                <p className="text-[11px] text-mata-ink/60 mt-1">da meta alcançada</p>
-                <div className="h-1.5 bg-[#eee4d5] rounded-full mt-2 overflow-hidden">
-                  <div className="h-full bg-gradient-to-r from-[#8d521e] to-[#c18a3d] rounded-full" style={{ width: `${percentualMeta}%` }} />
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
-
-      {/* Vendedores + contas a receber */}
-      <section className="grid grid-cols-1 xl:grid-cols-[642fr_587fr] gap-[5px]">
-        <div className="bg-white/90 border border-[#eadfce] rounded-2xl p-4 shadow-[0_10px_30px_rgba(77,45,18,0.05)] xl:h-[235px] overflow-hidden">
-          <div className="flex items-center justify-between gap-2 mb-2">
-            <div className="flex items-center gap-3">
-              <span className="text-[#9A5B20] text-xl">♟</span>
-              <h3 className="font-display text-xl text-mata-ink">Vendas por vendedor</h3>
-            </div>
-            <span className="hidden sm:inline-flex border border-[#eadfce] rounded-xl px-2.5 py-1 text-[11px] text-mata-ink/65 bg-[#fbf7f0]">Todos os períodos</span>
-          </div>
-          {vendasPorVendedor.length === 0 ? (
-            <div className="h-[125px] flex items-center justify-center text-sm text-mata-ink/40 text-center px-4">Ainda não há vendas atribuídas a vendedores.</div>
-          ) : (
-            <div className="h-[165px] min-h-0 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={vendasPorVendedor} layout="vertical" margin={{ top: 0, right: 12, left: 8, bottom: 0 }} barCategoryGap="18%">
-                  <CartesianGrid strokeDasharray="3 3" stroke="#EDE3D3" horizontal={false} />
-                  <XAxis type="number" tick={{ fontSize: 10, fill: '#59483A' }} axisLine={{ stroke: '#D9C7AE' }} tickLine={false} />
-                  <YAxis type="category" dataKey="nome" width={92} tick={{ fontSize: 11, fill: '#59483A' }} axisLine={false} tickLine={false} />
-                  <Tooltip formatter={(v) => formatarMoeda(v)} labelFormatter={(label) => `Vendedor: ${label}`} />
-                  <Bar dataKey="total" name="Valor vendido" fill="#A96A26" radius={[0, 6, 6, 0]} maxBarSize={20} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </div>
-
-        <div className="bg-white/90 border border-[#eadfce] rounded-2xl p-4 shadow-[0_10px_30px_rgba(77,45,18,0.05)] xl:h-[235px] overflow-hidden">
-          <div className="flex items-center justify-between gap-2 mb-2">
-            <div className="flex items-center gap-3">
-              <span className="text-[#9A5B20] text-xl">◷</span>
-              <h3 className="font-display text-xl text-mata-ink">Contas a receber</h3>
-            </div>
-            <span className="border border-[#eadfce] rounded-xl px-2.5 py-1 text-[11px] text-mata-ink/65 bg-[#fbf7f0]">Inadimplência</span>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2 mb-3">
-            <div className="rounded-xl bg-red-50/80 border border-red-100 px-3 py-2">
-              <p className="text-[10px] uppercase tracking-wide text-red-700/70">Em atraso</p>
-              <p className="font-display text-lg text-red-700 leading-tight">{formatarMoeda(totalEmAtraso)}</p>
-              <p className="text-[10px] text-red-700/60">{contasEmAtraso.length} parcela(s)</p>
-            </div>
-            <div className="rounded-xl bg-amber-50/80 border border-amber-100 px-3 py-2">
-              <p className="text-[10px] uppercase tracking-wide text-amber-700/70">A vencer</p>
-              <p className="font-display text-lg text-amber-700 leading-tight">{formatarMoeda(totalAVencer)}</p>
-              <p className="text-[10px] text-amber-700/60">{contasAVencer.length} parcela(s)</p>
-            </div>
-            <div className="rounded-xl bg-green-50/80 border border-green-100 px-3 py-2">
-              <p className="text-[10px] uppercase tracking-wide text-green-700/70">Recebido no mês</p>
-              <p className="font-display text-lg text-green-700 leading-tight">{formatarMoeda(recebidoNoMes)}</p>
-              <p className="text-[10px] text-green-700/60">pagamentos</p>
-            </div>
-          </div>
-
-          <div className="border-t border-[#eadfce] pt-2.5 space-y-1.5 max-h-[76px] overflow-y-auto pr-1">
-            {contasEmAtraso.slice(0, 4).map((c) => (
-              <div key={`${c.venda.id}-${c.index}`} className="flex items-center justify-between gap-3 text-xs">
-                <div className="min-w-0">
-                  <p className="font-medium text-mata-ink truncate">{c.cliente}</p>
-                  <p className="text-[10px] text-red-600/70">Vencida em {formatarData(c.parcela.vencimento)}</p>
-                </div>
-                <span className="font-medium text-red-700 shrink-0">{formatarMoeda(c.valor)}</span>
-              </div>
-            ))}
-            {contasEmAtraso.length === 0 && (
-              <p className="text-xs text-mata-ink/45 text-center py-2">Nenhuma parcela em atraso.</p>
             )}
           </div>
         </div>
-      </section>
+      )}
 
       {/* Modal com os retornos dos condicionais desta semana */}
       {retornosAbertos && (
@@ -645,14 +624,14 @@ export default function Dashboard() {
           <div className="bg-[#fffdfa] border border-[#eadfce] rounded-2xl p-5 sm:p-6 w-full max-w-3xl max-h-[82vh] overflow-y-auto shadow-2xl space-y-4">
             <div className="flex items-center justify-between gap-4">
               <div>
-                <h3 className="font-display text-xl text-mata-ink">↻ Retornos dos condicionais</h3>
-                <p className="text-xs text-mata-ink/50 mt-1">Condicionais com retorno previsto para esta semana.</p>
+                <h3 className="font-display text-[17px] text-mata-ink">↻ Retornos dos condicionais</h3>
+                <p className="text-[9px] text-mata-ink/50 mt-1">Condicionais com retorno previsto para esta semana.</p>
               </div>
-              <button onClick={() => setRetornosAbertos(false)} className="text-mata-ink/45 hover:text-mata-ink text-sm">Fechar ✕</button>
+              <button onClick={() => setRetornosAbertos(false)} className="text-mata-ink/45 hover:text-mata-ink text-[9px]">Fechar ✕</button>
             </div>
 
             {condicionaisRetornoSemana.length === 0 ? (
-              <p className="text-sm text-mata-ink/40 py-6 text-center">Nenhum condicional com retorno previsto para esta semana.</p>
+              <p className="text-[9px] text-mata-ink/40 py-6 text-center">Nenhum condicional com retorno previsto para esta semana.</p>
             ) : (
               <div className="space-y-2">
                 {condicionaisRetornoSemana.map((venda) => {
@@ -661,8 +640,8 @@ export default function Dashboard() {
                   return (
                     <div key={venda.id} className="border border-[#eadfce] rounded-xl bg-white px-4 py-3 flex items-center justify-between gap-4">
                       <div className="min-w-0">
-                        <p className="font-medium text-sm text-mata-ink truncate">{venda.contatos?.nome || contatosPorId[venda.contato_id]?.nome || 'Cliente não informado'}</p>
-                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-mata-ink/55 mt-1">
+                        <p className="font-medium text-[9px] text-mata-ink truncate">{venda.contatos?.nome || contatosPorId[venda.contato_id]?.nome || 'Cliente não informado'}</p>
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[9px] text-mata-ink/55 mt-1">
                           <span>Retorno: <strong className="text-mata-ink/75">{formatarData(venda.dataRetorno)}</strong></span>
                           <span>{itens.reduce((s, i) => s + Number(i.quantidade || 0), 0)} item(ns)</span>
                           <span>{formatarMoeda(total)}</span>
@@ -674,7 +653,7 @@ export default function Dashboard() {
                           setRetornosAbertos(false)
                           navigate('/vendas', { state: { editarVendaId: venda.id } })
                         }}
-                        className="shrink-0 rounded-lg bg-[#B8782D] px-3 py-2 text-xs font-medium text-white hover:brightness-105 transition"
+                        className="shrink-0 rounded-lg bg-[#B8782D] px-3 py-2 text-[9px] font-medium text-white hover:brightness-105 transition"
                       >
                         Ver venda →
                       </button>
@@ -687,24 +666,141 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* Modal financeiro: recebido no mês / a vencer / em atraso */}
+      {contasModal && (
+        <div className="fixed inset-0 bg-[#1d120b]/45 backdrop-blur-[2px] flex items-center justify-center p-4 sm:p-6 z-50">
+          <div className="bg-[#fffdfa] border border-[#eadfce] rounded-2xl p-5 sm:p-6 w-full max-w-5xl max-h-[86vh] overflow-y-auto shadow-2xl space-y-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-display text-[17px] text-mata-ink">
+                  {contasModal === 'recebido' && '✓ Recebido no mês'}
+                  {contasModal === 'vencer' && '◷ A vencer'}
+                  {contasModal === 'atraso' && '⚠ Em atraso'}
+                  <span className="text-mata-ink/40 text-[9px] font-sans ml-2">({listaContasModal.length})</span>
+                </h3>
+                <p className="text-[9px] text-mata-ink/50 mt-1">
+                  {contasModal === 'recebido' && 'Pagamentos cuja data de pagamento foi registrada neste mês.'}
+                  {contasModal === 'vencer' && 'Parcelas ainda não pagas e com vencimento hoje ou em data futura.'}
+                  {contasModal === 'atraso' && 'Todas as parcelas vencidas que ainda não foram pagas.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setContasModal(null)}
+                className="text-mata-ink/45 hover:text-mata-ink text-[9px] shrink-0"
+              >
+                Fechar ✕
+              </button>
+            </div>
+
+            {listaContasModal.length === 0 ? (
+              <div className="py-10 text-center">
+                <p className="text-[9px] text-mata-ink/45">
+                  {contasModal === 'recebido'
+                    ? 'Nenhum pagamento foi registrado neste mês.'
+                    : contasModal === 'vencer'
+                      ? 'Nenhuma parcela a vencer.'
+                      : 'Nenhuma parcela em atraso.'}
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-[9px] min-w-[760px]">
+                  <thead className="text-mata-ink/50 text-[10px] uppercase tracking-wide">
+                    <tr className="border-b border-[#eadfce]">
+                      <th className="text-left py-2.5 pr-3">Cliente</th>
+                      <th className="text-left py-2.5 pr-3">Parcela</th>
+                      <th className="text-left py-2.5 pr-3">Vencimento</th>
+                      {contasModal === 'recebido' && (
+                        <th className="text-left py-2.5 pr-3">Pagamento</th>
+                      )}
+                      {contasModal === 'atraso' && (
+                        <th className="text-left py-2.5 pr-3">Dias em atraso</th>
+                      )}
+                      <th className="text-right py-2.5">Valor</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {listaContasModal.map((c) => {
+                      const numeroParcela = c.parcela.numero || c.parcela.parcela || c.parcela.n || (c.index + 1)
+                      const totalParcelas = c.parcela.total_parcelas || c.parcela.quantidade_parcelas || null
+                      const diasAtraso = c.vencimento
+                        ? Math.max(0, Math.floor((hojeData - c.vencimento) / 86400000))
+                        : 0
+
+                      return (
+                        <tr key={`${c.venda.id}-${c.index}`} className="border-b border-[#eadfce]/70">
+                          <td className="py-3 pr-3">
+                            <p className="font-medium text-mata-ink">{c.cliente}</p>
+                            <p className="text-[10px] text-mata-ink/45">
+                              Venda {formatarData(c.venda.data_venda)}
+                            </p>
+                          </td>
+                          <td className="py-3 pr-3 text-mata-ink/70">
+                            {numeroParcela}{totalParcelas ? `/${totalParcelas}` : ''}
+                          </td>
+                          <td className="py-3 pr-3 text-mata-ink/70">
+                            {c.vencimento ? formatarData(c.vencimento) : '—'}
+                          </td>
+                          {contasModal === 'recebido' && (
+                            <td className="py-3 pr-3">
+                              <label className="inline-flex items-center gap-2 text-mata-ink/75">
+                                <input
+                                  type="checkbox"
+                                  checked
+                                  readOnly
+                                  disabled
+                                  className="w-4 h-4 accent-green-700"
+                                />
+                                <span>{c.dataPagamento ? formatarData(c.dataPagamento) : 'Pagamento registrado'}</span>
+                              </label>
+                            </td>
+                          )}
+                          {contasModal === 'atraso' && (
+                            <td className="py-3 pr-3 text-red-700 font-medium">
+                              {diasAtraso} dia(s)
+                            </td>
+                          )}
+                          <td className="py-3 text-right font-medium text-mata-ink">{formatarMoeda(c.valor)}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td colSpan={contasModal === 'atraso' ? 4 : contasModal === 'recebido' ? 4 : 3} className="pt-3 text-right font-medium text-mata-ink/65">
+                        Total
+                      </td>
+                      <td className="pt-3 text-right font-display text-[15px] text-mata-ink">
+                        {formatarMoeda(listaContasModal.reduce((s, c) => s + c.valor, 0))}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Modal com a lista detalhada da categoria clicada */}
       {categoriaAberta && (
         <div className="fixed inset-0 bg-[#1d120b]/45 backdrop-blur-[2px] flex items-center justify-center p-4 sm:p-6 z-50">
           <div className="bg-[#fffdfa] border border-[#eadfce] rounded-2xl p-5 sm:p-6 w-full max-w-2xl max-h-[82vh] overflow-y-auto shadow-2xl space-y-4">
             <div className="flex items-center justify-between gap-4">
-              <h3 className="font-display text-xl text-mata-ink">
+              <h3 className="font-display text-[17px] text-mata-ink">
                 {ESTILO_CATEGORIA[categoriaAberta].emoji} {LABEL_CATEGORIA[categoriaAberta]}{' '}
-                <span className="text-mata-ink/40 text-sm font-sans">({listaCategoriaAberta.length})</span>
+                <span className="text-mata-ink/40 text-[9px] font-sans">({listaCategoriaAberta.length})</span>
               </h3>
-              <button onClick={() => setCategoriaAberta(null)} className="text-mata-ink/45 hover:text-mata-ink text-sm">Fechar ✕</button>
+              <button onClick={() => setCategoriaAberta(null)} className="text-mata-ink/45 hover:text-mata-ink text-[9px]">Fechar ✕</button>
             </div>
 
             {listaCategoriaAberta.length === 0 ? (
-              <p className="text-sm text-mata-ink/40">Nenhum contato ativo nessa categoria.</p>
+              <p className="text-[9px] text-mata-ink/40">Nenhum contato ativo nessa categoria.</p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-sm min-w-[620px]">
-                  <thead className="text-mata-ink/50 text-xs uppercase tracking-wide">
+                <table className="w-full text-[9px] min-w-[620px]">
+                  <thead className="text-mata-ink/50 text-[9px] uppercase tracking-wide">
                     <tr>
                       <th className="text-left py-2">Nome</th>
                       <th className="text-left py-2">Tipo</th>

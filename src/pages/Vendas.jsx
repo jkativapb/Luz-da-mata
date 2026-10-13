@@ -177,10 +177,20 @@ export default function Vendas() {
   }
 
   function adicionarLinha() {
-    setItensForm([
-      ...itensForm,
-      { produto_id: '', produto_nome: '', quantidade: 1, valor_unitario: 0, preco_base: 0, desconto_percentual: 0, tipo_cliente: 'cliente_final', quantidade_vendida: 0, quantidade_devolvida: 0 },
-    ])
+    const novoItem = {
+      produto_id: '',
+      produto_nome: '',
+      quantidade: 1,
+      valor_unitario: 0,
+      preco_base: 0,
+      desconto_percentual: 0,
+      tipo_cliente: 'cliente_final',
+      quantidade_vendida: 0,
+      quantidade_devolvida: 0,
+    }
+
+    // Insere a nova linha no início para que fique visível sem rolar a lista.
+    setItensForm((atuais) => [novoItem, ...atuais])
   }
 
   function removerLinha(idx) {
