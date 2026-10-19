@@ -131,6 +131,9 @@ export default function Cadastro() {
   const [mostrarForm, setMostrarForm] = useState(false)
   const [buscandoCep, setBuscandoCep] = useState(false)
   const [erroCep, setErroCep] = useState('')
+  const [cadastroConversaoSalvo, setCadastroConversaoSalvo] = useState(false)
+  const fluxoConversao = location.state?.fluxoConversao === true
+  const visitaConversaoId = location.state?.visitaId || null
 
   useEffect(() => {
     carregar()
@@ -160,14 +163,23 @@ export default function Cadastro() {
   // Se chegou aqui vindo do Dashboard (clique em "Ver cliente"),
   // abre direto a ficha de edição do contato indicado.
   useEffect(() => {
-    const idParaAbrir = location.state?.editarContatoId
+    const estado = location.state || {}
+    if (estado.fluxoConversao && estado.novoLeadNome) {
+      setForm({ ...vazio, nome: estado.novoLeadNome, tipo: 'cliente_final', data_ultimo_contato: dataHoje(), aguardando_retorno: true, data_proximo_contato: adicionarDias(dataHoje(), 5) })
+      setEditandoId(null)
+      setCadastroConversaoSalvo(false)
+      setMostrarForm(true)
+      return
+    }
+    const idParaAbrir = estado.editarContatoId
     if (idParaAbrir && contatos.length > 0) {
       const c = contatos.find((x) => x.id === idParaAbrir)
       if (c) {
         setAba('todos')
         abrirEdicao(c)
+        setCadastroConversaoSalvo(false)
       }
-      navigate(location.pathname, { replace: true, state: null })
+      navigate(location.pathname, { replace: true, state: estado.fluxoConversao ? estado : null })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contatos])
@@ -205,6 +217,7 @@ export default function Cadastro() {
   function abrirNovo() {
     setForm({ ...vazio, tipo: 'cliente_final', data_ultimo_contato: dataHoje(), aguardando_retorno: true, data_proximo_contato: adicionarDias(dataHoje(), 5) })
     setEditandoId(null)
+    setCadastroConversaoSalvo(false)
     setMostrarForm(true)
   }
 
@@ -218,6 +231,7 @@ export default function Cadastro() {
       data_proximo_contato: c.data_proximo_contato || (c.converteu_negocio ? adicionarDias(c.data_ultimo_contato || dataHoje(), 30) : adicionarDias(c.data_ultimo_contato || dataHoje(), 5)),
     })
     setEditandoId(c.id)
+    setCadastroConversaoSalvo(false)
     setMostrarForm(true)
   }
 
@@ -264,6 +278,21 @@ export default function Cadastro() {
       return
     }
 
+    // Impede CPF/CNPJ repetido em outro cadastro. Ao editar, ignora o próprio registro.
+    const colunaDocumento = form.tipo === 'clinica' ? 'cnpj' : 'cpf'
+    const documentoNormalizado = somenteNumeros(documento)
+    let consultaDuplicidade = supabase.from('contatos').select('id').eq(colunaDocumento, documentoNormalizado)
+    if (editandoId) consultaDuplicidade = consultaDuplicidade.neq('id', editandoId)
+    const { data: documentoExistente, error: erroDuplicidade } = await consultaDuplicidade.limit(1)
+    if (erroDuplicidade) {
+      alert(`Não foi possível verificar se o documento já existe: ${erroDuplicidade.message}`)
+      return
+    }
+    if (documentoExistente?.length) {
+      alert(`Este ${form.tipo === 'clinica' ? 'CNPJ' : 'CPF'} já está cadastrado no sistema.`)
+      return
+    }
+
     const converteu = form.converteu_negocio === true
     const aguardando = !converteu && form.aguardando_retorno !== false
     const dataBaseContato = form.data_ultimo_contato || dataHoje()
@@ -288,11 +317,34 @@ export default function Cadastro() {
     }
 
     const resposta = editandoId
-      ? await supabase.from('contatos').update(payload).eq('id', editandoId)
-      : await supabase.from('contatos').insert(payload)
+      ? await supabase.from('contatos').update(payload).eq('id', editandoId).select('id').single()
+      : await supabase.from('contatos').insert(payload).select('id').single()
 
-    if (resposta.error) {
-      alert(`Não foi possível salvar: ${resposta.error.message}`)
+    if (resposta.error || !resposta.data?.id) {
+      alert(`Não foi possível salvar: ${resposta.error?.message || 'cadastro não confirmado'}`)
+      return
+    }
+
+    const contatoSalvoId = resposta.data.id
+    if (fluxoConversao && visitaConversaoId) {
+      // Registra a data local em que a conversão foi confirmada, sem alterar a data da visita.
+      const agora = new Date()
+      const dataConversao = `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, '0')}-${String(agora.getDate()).padStart(2, '0')}`
+      const { error: erroVisita } = await supabase
+        .from('visitas')
+        .update({ contato_id: contatoSalvoId, convertido: true, data_conversao: dataConversao, status: 'concluido' })
+        .eq('id', visitaConversaoId)
+      if (erroVisita) {
+        alert(`Cadastro salvo, mas não foi possível vincular a visita: ${erroVisita.message}`)
+      }
+    }
+    if (fluxoConversao) {
+      setEditandoId(contatoSalvoId)
+      setCadastroConversaoSalvo(true)
+      setMostrarForm(true)
+      navigate(location.pathname, { replace: true, state: { fluxoConversao: true, visitaId: visitaConversaoId, editarContatoId: contatoSalvoId } })
+      await carregar()
+      alert('Cadastro salvo! Agora você pode registrar a venda.')
       return
     }
 
@@ -713,6 +765,7 @@ export default function Cadastro() {
 
                 <div className="flex items-center gap-2 shrink-0">
                   <button type="button" onClick={() => setMostrarForm(false)} className="px-4 py-2 text-[13px] text-mata-ink/60 hover:text-mata-ink">Cancelar</button>
+                  {fluxoConversao && <button type="button" disabled={!cadastroConversaoSalvo || !editandoId} onClick={() => navigate('/vendas', { state: { novoContatoId: editandoId } })} className="px-4 py-2 text-[13px] border border-[#9A5B20] text-[#9A5B20] rounded-lg disabled:opacity-40 disabled:cursor-not-allowed">Registrar venda</button>}
                   <button type="submit" className="px-5 py-2 text-[13px] bg-gradient-to-r from-[#9A5B20] to-[#B8782D] text-white rounded-lg shadow-[0_6px_16px_rgba(154,91,32,0.18)] hover:brightness-105 transition">Salvar cadastro</button>
                 </div>
               </div>

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useOutletContext } from 'react-router-dom'
+import { useLocation, useNavigate, useOutletContext } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { formatarData, formatarMoeda } from '../lib/helpers'
+import { totalLiquidoVenda, vendasFinanceiras } from '../lib/financeiroVendas'
 
 // Datas "YYYY-MM-DD" do banco devem ser lidas como data LOCAL.
 // new Date('2026-10-01') é interpretado em UTC e, no Brasil (UTC-3), vira 30/09 às 21h,
@@ -9,6 +10,14 @@ import { formatarData, formatarMoeda } from '../lib/helpers'
 function paraDataLocal(valor) {
   const [ano, mes, dia] = String(valor || '').slice(0, 10).split('-').map(Number)
   return new Date(ano || 1970, (mes || 1) - 1, dia || 1)
+}
+
+// Exibe datas de venda como datas-calendário, sem conversão de fuso horário.
+function formatarDataVenda(valor) {
+  if (!valor) return '—'
+  const [ano, mes, dia] = String(valor).slice(0, 10).split('-')
+  if (!ano || !mes || !dia) return formatarData(valor)
+  return `${dia}/${mes}/${ano}`
 }
 
 function dataParaISO(d) {
@@ -27,6 +36,7 @@ const vendaVazia = {
   vendedor_id: '',
   vendedor_nome: '',
   data_venda: hojeLocal(),
+  primeira_venda: false,
   forma_pagamento: '',
   situacao_pagamento: 'pago',
   data_pagamento: hojeLocal(),
@@ -41,6 +51,8 @@ const vendaVazia = {
 }
 
 export default function Vendas() {
+  const location = useLocation()
+  const navigate = useNavigate()
   const { setPageHeader } = useOutletContext()
 
   const [vendas, setVendas] = useState([])
@@ -70,6 +82,19 @@ export default function Vendas() {
   useEffect(() => {
     carregar()
   }, [])
+
+  useEffect(() => {
+    const contatoId = location.state?.novoContatoId
+    if (!contatoId || !contatos.some((c) => c.id === contatoId)) return
+    const hoje = hojeLocal()
+    setForm({ ...vendaVazia, contato_id: contatoId, data_venda: hoje, data_pagamento: hoje, situacao_pagamento: 'pago', parcelamento: '1x', parcelas_json: [], data_retorno_condicional: '', desconto_venda: 0 })
+    setSituacaoPagamento('pago')
+    setParcelamento('1x')
+    setItensForm([{ produto_id: '', produto_nome: '', quantidade: 1, valor_unitario: 0, preco_base: 0, desconto_percentual: 0, tipo_cliente: 'cliente_final', quantidade_vendida: 0, quantidade_devolvida: 0 }])
+    setModoPagamento(false)
+    setMostrarForm(true)
+    navigate(location.pathname, { replace: true, state: null })
+  }, [contatos, location.state, location.pathname, navigate])
 
   useEffect(() => {
     setPageHeader({
@@ -108,7 +133,7 @@ export default function Vendas() {
 
     const { data: cData } = await supabase
       .from('contatos')
-      .select('id, nome, tipo, cpf, cnpj, desconto_percentual')
+      .select('id, nome, tipo, cpf, cnpj, desconto_percentual, ativo, data_inativacao')
       .order('nome')
 
     const { data: vendedorData } = await supabase
@@ -286,6 +311,7 @@ export default function Vendas() {
       vendedor_id: venda.vendedor_id || '',
       vendedor_nome: venda.vendedor_nome || '',
       data_venda: String(venda.data_venda || '').slice(0, 10) || hojeLocal(),
+      primeira_venda: Boolean(venda.primeira_venda),
       forma_pagamento: venda.forma_pagamento || '',
       situacao_pagamento: venda.situacao_pagamento || 'pago',
       data_pagamento: String(venda.data_pagamento || venda.data_venda || '').slice(0, 10),
@@ -393,6 +419,7 @@ export default function Vendas() {
       vendedor_id: form.vendedor_id || null,
       vendedor_nome: form.vendedor_nome || null,
       data_venda: dataVenda,
+      primeira_venda: Boolean(form.primeira_venda),
       forma_pagamento: form.forma_pagamento || null,
       ...camposPagamento(situacaoFinal, dataVenda),
       desconto_venda: Number(form.desconto_venda || 0),
@@ -643,14 +670,7 @@ export default function Vendas() {
   const totalForm = totalLiquido
 
   // Total líquido da venda: soma dos itens menos o desconto da venda (desconto_venda).
-  const totalVenda = (v) => {
-    const bruto = (itensPorVenda[v.id] || []).reduce(
-      (s, i) => s + Number(i.quantidade || 0) * Number(i.valor_unitario || 0),
-      0,
-    )
-    const desconto = Math.max(0, Number(v.desconto_venda || 0))
-    return Math.max(0, bruto - desconto)
-  }
+  const totalVenda = (v) => totalLiquidoVenda(v, itensPorVenda)
 
   const parcelasDaVenda = (v) => {
     const parcelas = Array.isArray(v.parcelas_json) ? v.parcelas_json : []
@@ -664,10 +684,12 @@ export default function Vendas() {
   }
 
   // Vendas com NF cancelada continuam no histórico, mas não entram nos totais.
-  const vendasAtivas = vendas.filter((v) => !v.nf_cancelada)
+  const vendasAtivas = vendasFinanceiras(vendas, contatos)
   const vendasEfetivadas = vendasAtivas.filter((v) => v.situacao_pagamento !== 'condicional')
 
-  const totalGeral = vendasEfetivadas.reduce((s, v) => s + totalVenda(v), 0)
+  const totalGeral = vendasEfetivadas
+    .filter((v) => paraDataLocal(v.data_venda).getFullYear() === new Date().getFullYear())
+    .reduce((s, v) => s + totalVenda(v), 0)
   const ticketMedio = vendasEfetivadas.length ? totalGeral / vendasEfetivadas.length : 0
 
   const inicioMes = new Date()
@@ -675,7 +697,7 @@ export default function Vendas() {
   inicioMes.setHours(0, 0, 0, 0)
 
   const totalMes = vendasEfetivadas
-    .filter((v) => paraDataLocal(v.data_venda) >= inicioMes)
+    .filter((v) => paraDataLocal(v.data_venda).getFullYear() === inicioMes.getFullYear() && paraDataLocal(v.data_venda).getMonth() === inicioMes.getMonth())
     .reduce((s, v) => s + totalVenda(v), 0)
 
   const itensVendidos = vendasEfetivadas.reduce(
@@ -689,7 +711,7 @@ export default function Vendas() {
   )
 
   const hoje = hojeLocal()
-  const vendasDoMes = vendasEfetivadas.filter((v) => paraDataLocal(v.data_venda) >= inicioMes).length
+  const vendasDoMes = vendasEfetivadas.filter((v) => paraDataLocal(v.data_venda).getFullYear() === inicioMes.getFullYear() && paraDataLocal(v.data_venda).getMonth() === inicioMes.getMonth()).length
 
   // Valor em condicional: vendas cuja situação é "condicional" (ainda sem pagamento definido).
   const valorCondicional = vendasAtivas
@@ -1056,7 +1078,7 @@ export default function Vendas() {
                           {venda.vendedor_nome || 'Não informado'}
                         </span>
                         <span className="text-[11px] text-mata-ink/60">
-                          {formatarData(venda.data_venda)}
+                          {formatarDataVenda(venda.data_venda)}
                         </span>
                         <span className="text-[11px] text-mata-ink/70 truncate">
                           {venda.forma_pagamento || 'Não informado'}
@@ -1107,7 +1129,7 @@ export default function Vendas() {
                   Vendas realizadas
                 </span>
                 <strong className="font-display text-[18px] text-[#2f2118]">
-                  {vendasAtivas.length}
+                  {vendasEfetivadas.length}
                 </strong>
               </div>
 
@@ -1244,7 +1266,7 @@ export default function Vendas() {
                   <div className="flex justify-between gap-3 text-[11px]">
                     <span className="text-mata-ink/55">Data da venda</span>
                     <strong className="text-[#2f2118]">
-                      {formatarData(vendaSelecionada.data_venda)}
+                      {formatarDataVenda(vendaSelecionada.data_venda)}
                     </strong>
                   </div>
                   <div className="flex justify-between gap-3 text-[11px]">
@@ -1451,7 +1473,7 @@ export default function Vendas() {
                     <div className="min-w-0">
                       <p className="text-[12px] font-medium text-[#2f2118] truncate">{venda.contatos?.nome || 'Sem nome'}</p>
                       <p className={`text-[10px] ${atrasado ? 'text-[#a63d3d]/80' : 'text-mata-ink/55'}`}>
-                        Venda de {formatarData(venda.data_venda)}
+                        Venda de {formatarDataVenda(venda.data_venda)}
                         {retorno ? ` — retorno ${atrasado ? 'era ' : 'previsto '}${formatarData(retorno)}` : ' — sem data de retorno'}
                       </p>
                     </div>
@@ -1614,13 +1636,25 @@ export default function Vendas() {
                           <span className="text-xl text-[#9A5B20]">▣</span>
                           <h4 className="font-display text-[20px] text-[#2f2118]">Data da venda</h4>
                         </div>
-                        <input
-                          type="date"
-                          required
-                          value={form.data_venda}
-                          onChange={(e) => setForm({ ...form, data_venda: e.target.value, parcelas_json: [] })}
-                          className="w-full border border-[#dec6a8] bg-[#fffdf9] rounded-xl px-3 py-2.5 text-sm outline-none"
-                        />
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="date"
+                            required
+                            value={form.data_venda}
+                            onChange={(e) => setForm({ ...form, data_venda: e.target.value, parcelas_json: [] })}
+                            className="min-w-0 flex-1 w-full border border-[#dec6a8] bg-[#fffdf9] rounded-xl px-3 py-2.5 text-sm outline-none"
+                          />
+                          <label className="shrink-0 flex items-center gap-1.5 cursor-pointer text-[12px] font-medium text-[#6f461f] whitespace-nowrap">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(form.primeira_venda)}
+                              onChange={(e) => setForm({ ...form, primeira_venda: e.target.checked })}
+                              disabled={modoPagamento}
+                              className="h-4 w-4 accent-[#B8782D]"
+                            />
+                            Primeira venda
+                          </label>
+                        </div>
                       </section>
                     </div>
 

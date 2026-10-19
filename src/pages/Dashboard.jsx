@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useOutletContext } from 'react-router-dom'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LabelList } from 'recharts'
 import { supabase } from '../supabaseClient'
 import { formatarMoeda, diasDesde, formatarData, categoriaRelacionamento, LABEL_CATEGORIA } from '../lib/helpers'
 import { exportarParaExcel } from '../lib/excel'
+import { totalLiquidoVenda, vendaValidaHistorico } from '../lib/financeiroVendas'
 
 const CORES = ['#B0673A', '#C9A15A', '#5C6E4A', '#8C5A3C', '#3B2417']
 
@@ -26,7 +27,7 @@ export default function Dashboard() {
   const [categoriaAberta, setCategoriaAberta] = useState(null) // 'em_dia' | 'atencao' | 'precisa_contato' | null
   const [retornosAbertos, setRetornosAbertos] = useState(false)
   const [condicionaisAbertos, setCondicionaisAbertos] = useState(false)
-  const [contasModal, setContasModal] = useState(null) // 'recebido' | 'vencer' | 'atraso' | null
+  const [contasModal, setContasModal] = useState(null) // 'recebido' | 'recebido_anterior' | 'vencer' | 'atraso' | null
 
   useEffect(() => {
     carregar()
@@ -111,11 +112,7 @@ export default function Dashboard() {
   })
 
   function vendaContaNoHistorico(v) {
-    const c = contatosPorId[v.contato_id]
-    if (!c) return false
-    if (c.ativo !== false) return true
-    if (!c.data_inativacao) return false // inativo sem data registrada: não conta, por segurança
-    return new Date(v.data_venda) <= new Date(c.data_inativacao)
+    return vendaValidaHistorico(v, contatosPorId)
   }
 
   const vendasParaIndicadores = vendas.filter(vendaContaNoHistorico)
@@ -142,11 +139,7 @@ export default function Dashboard() {
   }
 
   function totalVenda(venda) {
-    const itens = itensPorVenda[venda.id] || []
-    return itens.reduce(
-      (soma, item) => soma + Number(item.quantidade || 0) * Number(item.valor_unitario || 0),
-      0
-    )
+    return totalLiquidoVenda(venda, itensPorVenda)
   }
 
   const hoje = new Date()
@@ -167,7 +160,10 @@ export default function Dashboard() {
     // Venda efetivada = tudo que NÃO está em condicional.
     // Renda acumulada: todas as vendas efetivadas, independentemente de já terem sido pagas.
     if (v.situacao_pagamento !== 'condicional') {
-      rendaAcumulada += totalVendaAtual
+      // Acumulado do ano: somente vendas efetivadas no ano corrente.
+      if (dataVenda && dataVenda.getFullYear() === hoje.getFullYear()) {
+        rendaAcumulada += totalVendaAtual
+      }
 
       // Renda do mês: somente vendas efetivadas cuja data pertence ao mês atual.
       // Comparar ano e mês evita incluir datas futuras ou de outros períodos.
@@ -179,8 +175,13 @@ export default function Dashboard() {
       if (mes) vendasPorMes[mes] = (vendasPorMes[mes] || 0) + totalVendaAtual
 
       const nomeVendedor = v.vendedor_nome || 'Não informado'
-      if (!vendedorTotais[nomeVendedor]) vendedorTotais[nomeVendedor] = { total: 0, vendas: 0 }
-      vendedorTotais[nomeVendedor].total += totalVendaAtual
+      if (!vendedorTotais[nomeVendedor]) vendedorTotais[nomeVendedor] = { totalAno: 0, totalMes: 0, vendas: 0 }
+      if (dataVenda && dataVenda.getFullYear() === hoje.getFullYear()) {
+        vendedorTotais[nomeVendedor].totalAno += totalVendaAtual
+      }
+      if (dataVenda && chaveMes(v.data_venda) === mesAtual) {
+        vendedorTotais[nomeVendedor].totalMes += totalVendaAtual
+      }
       vendedorTotais[nomeVendedor].vendas += 1
     }
 
@@ -197,10 +198,6 @@ export default function Dashboard() {
     return { mes: rotuloMes(chave), total: vendasPorMes[chave] || 0 }
   })
 
-  const vendasPorVendedor = Object.entries(vendedorTotais)
-    .sort((a, b) => b[1].total - a[1].total)
-    .slice(0, 6)
-    .map(([nome, dados]) => ({ nome, total: dados.total, vendas: dados.vendas }))
 
   // -------- vendas por categoria de produto (quantidade de itens) --------
   const categoriaQtd = {}
@@ -252,7 +249,7 @@ export default function Dashboard() {
 
     if (!parcelas.length && (venda.data_vencimento || venda.situacao_pagamento === 'pago')) {
       parcelas = [{
-        valor: Number(venda.total || 0) || totalVenda(venda),
+        valor: totalVenda(venda),
         vencimento: venda.data_vencimento || null,
         data_pagamento: venda.data_pagamento || null,
       }]
@@ -263,7 +260,7 @@ export default function Dashboard() {
     return parcelas.map((parcela, index) => {
       const statusTexto = String(parcela.status || parcela.situacao || '').toLowerCase()
       const temCampo = (campo) => Object.prototype.hasOwnProperty.call(parcela, campo)
-      const dataPagamento = parcela.data_pagamento || parcela.dataPagamento || parcela.data_recebimento || parcela.dataRecebimento || null
+      const dataPagamento = parcela.data_pagamento || parcela.dataPagamento || parcela.data_recebimento || parcela.dataRecebimento || parcela.pago_em || parcela.data_pago || parcela.dataPago || parcela.recebido_em || parcela.recebidoEm || null
 
       // A tela de Vendas é a fonte de verdade. Se a parcela possui um
       // checkbox/flag de pagamento, respeitamos exatamente o valor dele.
@@ -284,7 +281,7 @@ export default function Dashboard() {
       // A data também vem da parcela registrada na tela de Vendas.
       // O campo da venda só é usado no fallback de vendas antigas sem
       // controle individual de parcelas.
-      const dataPagamentoFinal = dataPagamento || (vendaPaga && parcelas.length === 1 ? venda.data_pagamento : null)
+      const dataPagamentoFinal = dataPagamento || (vendaPaga && parcelas.length === 1 ? (venda.data_pagamento || venda.pago_em || venda.data_pago) : null)
       const vencimento = dataLocal(parcela.vencimento || parcela.data_vencimento || venda.data_vencimento)
       const valor = Number(parcela.valor || parcela.valor_parcela || parcela.total || 0)
 
@@ -330,6 +327,12 @@ export default function Dashboard() {
   totalRecebido = contasRecebidas.reduce((total, c) => total + c.valor, 0)
   totalAReceber = contasReceber.reduce((total, c) => total + c.valor, 0)
 
+  // Recebimentos por ano e por mês são baseados na data real de pagamento da parcela.
+  const contasRecebidasNoAno = contasRecebidas.filter((c) =>
+    c.dataPagamento && c.dataPagamento.getFullYear() === hoje.getFullYear()
+  )
+  const recebidoNoAno = contasRecebidasNoAno.reduce((total, c) => total + c.valor, 0)
+
   // Recebido no mês = soma dos pagamentos cuja DATA DE PAGAMENTO está no mês atual.
   const contasRecebidasNoMes = contasRecebidas.filter((c) => {
     const data = c.dataPagamento
@@ -339,9 +342,37 @@ export default function Dashboard() {
   })
   const recebidoNoMes = contasRecebidasNoMes.reduce((total, c) => total + c.valor, 0)
 
+  // Subconjunto do recebido no mês: pagamentos de vendas feitas antes do mês atual.
+  // Este valor não é somado novamente ao total de recebidos.
+  const contasRecebidasVendasAnteriores = contasRecebidasNoMes.filter((c) => {
+    const dataVenda = dataLocal(c.venda?.data_venda)
+    return dataVenda && (dataVenda.getFullYear() < hoje.getFullYear() ||
+      (dataVenda.getFullYear() === hoje.getFullYear() && dataVenda.getMonth() < hoje.getMonth()))
+  })
+  const recebidoVendasAnteriores = contasRecebidasVendasAnteriores.reduce((total, c) => total + c.valor, 0)
+
+  // Gráfico por vendedor: acumulado do ano, vendas do mês e recebimentos do mês.
+  const recebidoMesPorVendedor = {}
+  contasRecebidasNoMes.forEach((conta) => {
+    const nome = conta.venda?.vendedor_nome || 'Não informado'
+    recebidoMesPorVendedor[nome] = (recebidoMesPorVendedor[nome] || 0) + conta.valor
+  })
+  const vendasPorVendedor = Object.entries(vendedorTotais)
+    .map(([nome, dados]) => ({
+      nome,
+      totalAno: dados.totalAno,
+      totalMes: dados.totalMes,
+      recebidoMes: recebidoMesPorVendedor[nome] || 0,
+      vendas: dados.vendas,
+    }))
+    .sort((a, b) => b.totalAno - a.totalAno)
+    .slice(0, 6)
+
   const listaContasModal = contasModal === 'recebido'
-    ? contasRecebidasNoMes.sort((a, b) => (b.dataPagamento || 0) - (a.dataPagamento || 0))
-    : contasModal === 'vencer'
+    ? contasRecebidasNoMes.slice().sort((a, b) => (b.dataPagamento || 0) - (a.dataPagamento || 0))
+    : contasModal === 'recebido_anterior'
+      ? contasRecebidasVendasAnteriores.slice().sort((a, b) => (b.dataPagamento || 0) - (a.dataPagamento || 0))
+      : contasModal === 'vencer'
       ? contasAVencer.sort((a, b) => a.vencimento - b.vencimento)
       : contasModal === 'atraso'
         ? contasEmAtraso.sort((a, b) => a.vencimento - b.vencimento)
@@ -478,10 +509,14 @@ export default function Dashboard() {
             <span className="text-[#9A5B20] text-[15px]">▥</span>
             <h3 className="font-display text-[15px] text-mata-ink">Vendas</h3>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-px gap-y-2 mb-[6px]">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-px gap-y-2 mb-[6px]">
             <div className="bg-[#f8f3e9] border border-[#eee2d0] rounded-xl px-3 py-2 flex items-center gap-2">
               <div className="w-8 h-8 rounded-lg bg-[#f0e2cc] text-[#9A5B20] flex items-center justify-center text-[17px] shrink-0">◉</div>
-              <div className="min-w-0"><p className="text-[9px] text-mata-ink/60">Vendas acumuladas</p><p className="font-display text-[15px] lg:text-[17px] text-mata-ink truncate">{formatarMoeda(rendaAcumulada)}</p></div>
+              <div className="min-w-0"><p className="text-[9px] text-mata-ink/60">Vendas acumuladas no ano</p><p className="font-display text-[15px] lg:text-[17px] text-mata-ink truncate">{formatarMoeda(rendaAcumulada)}</p></div>
+            </div>
+            <div className="bg-green-50/80 border border-green-100 rounded-xl px-3 py-2 flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-green-100 text-green-700 flex items-center justify-center text-[17px] shrink-0">✓</div>
+              <div className="min-w-0"><p className="text-[9px] text-green-700/75">Recebidos no ano</p><p className="font-display text-[15px] lg:text-[17px] text-green-700 truncate">{formatarMoeda(recebidoNoAno)}</p></div>
             </div>
             <div className="bg-[#fcf5ec] border border-[#eee2d0] rounded-xl px-3 py-2 flex items-center gap-2">
               <div className="w-8 h-8 rounded-lg bg-[#f6e8d7] text-[#9A5B20] flex items-center justify-center text-[17px] shrink-0">▦</div>
@@ -496,8 +531,8 @@ export default function Dashboard() {
               </div>
             </div>
             <div className="min-w-0 lg:border-l lg:border-[#eadfce] lg:pl-4">
-              <div className="mb-[6px]"><h4 className="font-display text-[15px] text-mata-ink">Vendas por vendedor</h4><p className="text-[9px] text-mata-ink/50">Todos os períodos</p></div>
-              {vendasPorVendedor.length === 0 ? <div className="h-[142px] flex items-center justify-center text-[9px] text-mata-ink/45 text-center">Ainda não há vendas atribuídas a vendedores.</div> : <div className="h-[142px] min-w-0"><ResponsiveContainer width="100%" height="100%"><BarChart data={vendasPorVendedor} layout="vertical" margin={{ top: 2, right: 8, left: 0, bottom: 0 }} barCategoryGap="22%"><CartesianGrid strokeDasharray="3 3" stroke="#EDE3D3" horizontal={false} /><XAxis type="number" tick={{ fontSize: 10, fill: '#59483A' }} axisLine={{ stroke: '#D9C7AE' }} tickLine={false} /><YAxis type="category" dataKey="nome" width={78} tick={{ fontSize: 10, fill: '#59483A' }} axisLine={false} tickLine={false} /><Tooltip formatter={(v) => formatarMoeda(v)} labelFormatter={(label) => `Vendedor: ${label}`} /><Bar dataKey="total" name="Valor vendido" fill="#5C6E4A" radius={[0, 5, 5, 0]} maxBarSize={18} /></BarChart></ResponsiveContainer></div>}
+              <div className="mb-[4px]"><div className="flex items-center justify-between gap-1"><h4 className="font-display text-[15px] text-mata-ink">Vendas por vendedor</h4><span className="text-[9px] text-mata-ink/50">Ano e mês atual</span></div><div className="flex flex-wrap gap-x-3 gap-y-1 text-[8px] text-mata-ink/65"><span className="inline-flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm bg-[#5C6E4A]" />Acumulado no ano</span><span className="inline-flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm bg-[#A96A26]" />Vendas do mês</span><span className="inline-flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm bg-[#C9A15A]" />Recebidos no mês</span></div></div>
+              {vendasPorVendedor.length === 0 ? <div className="h-[128px] flex items-center justify-center text-[9px] text-mata-ink/45 text-center">Ainda não há vendas atribuídas a vendedores.</div> : <div className="h-[150px] min-w-0"><ResponsiveContainer width="100%" height="100%"><BarChart data={vendasPorVendedor} layout="vertical" margin={{ top: 4, right: 46, left: 0, bottom: 0 }} barCategoryGap="18%" barGap={2}><CartesianGrid strokeDasharray="3 3" stroke="#EDE3D3" horizontal={false} /><XAxis type="number" tick={{ fontSize: 8, fill: '#59483A' }} axisLine={{ stroke: '#D9C7AE' }} tickLine={false} /><YAxis type="category" dataKey="nome" width={70} tick={{ fontSize: 8, fill: '#59483A' }} axisLine={false} tickLine={false} /><Bar dataKey="totalAno" name="Acumulado no ano" fill="#5C6E4A" radius={[0, 3, 3, 0]} maxBarSize={7}><LabelList dataKey="totalAno" position="right" formatter={(v) => v > 0 ? formatarMoeda(v) : ''} style={{ fontSize: 7, fill: '#59483A' }} /></Bar><Bar dataKey="totalMes" name="Vendas do mês" fill="#A96A26" radius={[0, 3, 3, 0]} maxBarSize={7}><LabelList dataKey="totalMes" position="right" formatter={(v) => v > 0 ? formatarMoeda(v) : ''} style={{ fontSize: 7, fill: '#59483A' }} /></Bar><Bar dataKey="recebidoMes" name="Recebidos no mês" fill="#C9A15A" radius={[0, 3, 3, 0]} maxBarSize={7}><LabelList dataKey="recebidoMes" position="right" formatter={(v) => v > 0 ? formatarMoeda(v) : ''} style={{ fontSize: 7, fill: '#59483A' }} /></Bar></BarChart></ResponsiveContainer></div>}
             </div>
           </div>
         </div>
@@ -505,10 +540,11 @@ export default function Dashboard() {
         {/* QUADRO 2 — Contas a receber */}
         <div className="bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-[8px] shadow-[0_10px_30px_rgba(77,45,18,0.05)]">
           <div className="flex items-center justify-between gap-2 mb-[6px]"><div className="flex items-center gap-3"><span className="text-[#9A5B20] text-[17px]">◷</span><h3 className="font-display text-[15px] text-mata-ink">Contas a receber</h3></div><span className="text-[9px] text-mata-ink/50">Visão financeira</span></div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-px gap-y-2 mb-[6px]">
-            <button type="button" onClick={() => setContasModal('atraso')} className="text-left rounded-xl bg-red-50/80 border border-red-100 px-2.5 py-2 hover:shadow-md transition" title="Ver parcelas em atraso"><p className="text-[9px] text-red-700/75">Em atraso</p><p className="font-display text-[15px] text-red-700">{formatarMoeda(totalEmAtraso)}</p><p className="text-[9px] text-red-700/60">{contasEmAtraso.length} parcela(s) · ver lista ›</p></button>
-            <button type="button" onClick={() => setContasModal('vencer')} className="text-left rounded-xl bg-amber-50/80 border border-amber-100 px-2.5 py-2 hover:shadow-md transition" title="Ver parcelas a vencer"><p className="text-[9px] text-amber-700/75">A vencer</p><p className="font-display text-[15px] text-amber-700">{formatarMoeda(totalAVencer)}</p><p className="text-[9px] text-amber-700/60">{contasAVencer.length} parcela(s) · ver lista ›</p></button>
-            <button type="button" onClick={() => setContasModal('recebido')} className="text-left rounded-xl bg-green-50/80 border border-green-100 px-2.5 py-2 hover:shadow-md transition" title="Ver pagamentos recebidos no mês"><p className="text-[9px] text-green-700/75">Recebidos no mês</p><p className="font-display text-[15px] text-green-700">{formatarMoeda(recebidoNoMes)}</p><p className="text-[9px] text-green-700/60">{contasRecebidasNoMes.length} pagamento(s) · ver lista ›</p></button>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-x-px gap-y-2 mb-[6px]">
+            <button type="button" onClick={() => setContasModal('atraso')} className="text-left rounded-xl bg-red-50/80 border border-red-100 px-2.5 py-2 hover:shadow-md transition" title="Ver parcelas em atraso"><p className="text-[9px] text-red-700/75">Em atraso</p><p className="font-display text-[15px] text-red-700">{formatarMoeda(totalEmAtraso)}</p><p className="text-[9px] text-red-700/60">{String(contasEmAtraso.length).padStart(2, '0')} {contasEmAtraso.length === 1 ? 'registro' : 'registros'}</p></button>
+            <button type="button" onClick={() => setContasModal('vencer')} className="text-left rounded-xl bg-amber-50/80 border border-amber-100 px-2.5 py-2 hover:shadow-md transition" title="Ver parcelas a vencer"><p className="text-[9px] text-amber-700/75">A vencer</p><p className="font-display text-[15px] text-amber-700">{formatarMoeda(totalAVencer)}</p><p className="text-[9px] text-amber-700/60">{String(contasAVencer.length).padStart(2, '0')} {contasAVencer.length === 1 ? 'registro' : 'registros'}</p></button>
+            <button type="button" onClick={() => setContasModal('recebido')} className="text-left rounded-xl bg-green-50/80 border border-green-100 px-2.5 py-2 hover:shadow-md transition" title="Ver pagamentos recebidos no mês"><p className="text-[9px] text-green-700/75">Recebidos no mês</p><p className="font-display text-[15px] text-green-700">{formatarMoeda(recebidoNoMes)}</p><p className="text-[9px] text-green-700/60">{String(contasRecebidasNoMes.length).padStart(2, '0')} {contasRecebidasNoMes.length === 1 ? 'registro' : 'registros'}</p></button>
+            <button type="button" onClick={() => setContasModal('recebido_anterior')} className="text-left rounded-xl bg-blue-50/80 border border-blue-100 px-2.5 py-2 hover:shadow-md transition" title="Ver recebimentos de vendas realizadas antes deste mês"><p className="text-[9px] text-blue-700/75">Recebidos de vendas anteriores</p><p className="font-display text-[15px] text-blue-700">{formatarMoeda(recebidoVendasAnteriores)}</p><p className="text-[9px] text-blue-700/60">{String(contasRecebidasVendasAnteriores.length).padStart(2, '0')} {contasRecebidasVendasAnteriores.length === 1 ? 'registro' : 'registros'}</p></button>
           </div>
           <div className="border-t border-[#eadfce] pt-2">
             <h4 className="font-display text-[15px] text-mata-ink mb-1">Distribuição das parcelas</h4>
@@ -673,13 +709,15 @@ export default function Dashboard() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h3 className="font-display text-[17px] text-mata-ink">
-                  {contasModal === 'recebido' && '✓ Recebido no mês'}
+                  {contasModal === 'recebido' && '✓ Recebidos no mês'}
+                  {contasModal === 'recebido_anterior' && '↶ Recebidos de vendas anteriores'}
                   {contasModal === 'vencer' && '◷ A vencer'}
                   {contasModal === 'atraso' && '⚠ Em atraso'}
                   <span className="text-mata-ink/40 text-[9px] font-sans ml-2">({listaContasModal.length})</span>
                 </h3>
                 <p className="text-[9px] text-mata-ink/50 mt-1">
-                  {contasModal === 'recebido' && 'Pagamentos cuja data de pagamento foi registrada neste mês.'}
+                  {contasModal === 'recebido' && 'Todos os pagamentos registrados neste mês, independentemente da data da venda.'}
+                  {contasModal === 'recebido_anterior' && 'Pagamentos registrados neste mês referentes a vendas realizadas em meses anteriores.'}
                   {contasModal === 'vencer' && 'Parcelas ainda não pagas e com vencimento hoje ou em data futura.'}
                   {contasModal === 'atraso' && 'Todas as parcelas vencidas que ainda não foram pagas.'}
                 </p>
@@ -696,8 +734,8 @@ export default function Dashboard() {
             {listaContasModal.length === 0 ? (
               <div className="py-10 text-center">
                 <p className="text-[9px] text-mata-ink/45">
-                  {contasModal === 'recebido'
-                    ? 'Nenhum pagamento foi registrado neste mês.'
+                  {(contasModal === 'recebido' || contasModal === 'recebido_anterior')
+                    ? (contasModal === 'recebido_anterior' ? 'Nenhum recebimento de vendas anteriores neste mês.' : 'Nenhum pagamento foi registrado neste mês.')
                     : contasModal === 'vencer'
                       ? 'Nenhuma parcela a vencer.'
                       : 'Nenhuma parcela em atraso.'}
@@ -711,7 +749,7 @@ export default function Dashboard() {
                       <th className="text-left py-2.5 pr-3">Cliente</th>
                       <th className="text-left py-2.5 pr-3">Parcela</th>
                       <th className="text-left py-2.5 pr-3">Vencimento</th>
-                      {contasModal === 'recebido' && (
+                      {(contasModal === 'recebido' || contasModal === 'recebido_anterior') && (
                         <th className="text-left py-2.5 pr-3">Pagamento</th>
                       )}
                       {contasModal === 'atraso' && (
@@ -742,7 +780,7 @@ export default function Dashboard() {
                           <td className="py-3 pr-3 text-mata-ink/70">
                             {c.vencimento ? formatarData(c.vencimento) : '—'}
                           </td>
-                          {contasModal === 'recebido' && (
+                          {(contasModal === 'recebido' || contasModal === 'recebido_anterior') && (
                             <td className="py-3 pr-3">
                               <label className="inline-flex items-center gap-2 text-mata-ink/75">
                                 <input
@@ -768,7 +806,7 @@ export default function Dashboard() {
                   </tbody>
                   <tfoot>
                     <tr>
-                      <td colSpan={contasModal === 'atraso' ? 4 : contasModal === 'recebido' ? 4 : 3} className="pt-3 text-right font-medium text-mata-ink/65">
+                      <td colSpan={contasModal === 'atraso' ? 4 : (contasModal === 'recebido' || contasModal === 'recebido_anterior') ? 4 : 3} className="pt-3 text-right font-medium text-mata-ink/65">
                         Total
                       </td>
                       <td className="pt-3 text-right font-display text-[15px] text-mata-ink">

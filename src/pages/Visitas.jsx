@@ -92,15 +92,18 @@ function mensagemParaCliente(visita) {
   const nome = visita.nome_lead || visita.contatos?.nome || ''
   const primeiroNome = nome.trim().split(/\s+/)[0]
   const { dia, data, hora } = partesDaReuniao(visita.data_visita)
-  const presencial = visita.tipo_contato === 'presencial'
+  const descricaoTipo = {
+    presencial: 'presencialmente',
+    videoconferencia: 'por videoconferência',
+    mensagem: 'por mensagem',
+    ligacao: 'por ligação telefônica',
+  }[visita.tipo_contato] || 'presencialmente'
 
   const linhas = [
     `Olá, ${primeiroNome}! Tudo bem?`,
-    `Passando para lembrar da sua reunião com a LuzDaMata, no dia ${dia}, ${data}, às ${hora}, ${
-      presencial ? 'presencialmente' : 'por videoconferência'
-    }.`,
+    `Passando para lembrar do nosso contato com a LuzDaMata, no dia ${dia}, ${data}, às ${hora}, ${descricaoTipo}.`,
   ]
-  if (!presencial) linhas.push('O link será encaminhado próximo ao horário da reunião.')
+  if (visita.tipo_contato === 'videoconferencia') linhas.push('O link será encaminhado próximo ao horário da reunião.')
   linhas.push('Até lá!')
   return linhas.join('\n')
 }
@@ -108,13 +111,16 @@ function mensagemParaCliente(visita) {
 function mensagemParaEquipe(visita, telefoneContato) {
   const nome = visita.nome_lead || visita.contatos?.nome || ''
   const { dia, data, hora } = partesDaReuniao(visita.data_visita)
-  const presencial = visita.tipo_contato === 'presencial'
+  const descricaoTipo = {
+    presencial: 'presencialmente',
+    videoconferencia: 'por videoconferência',
+    mensagem: 'por mensagem',
+    ligacao: 'por ligação telefônica',
+  }[visita.tipo_contato] || 'presencialmente'
 
   const linhas = [
     `Olá, ${visita.responsavel}! Tudo bem?`,
-    `Passando para lembrar da reunião com ${nome}, no dia ${dia}, ${data}, às ${hora}, ${
-      presencial ? 'presencialmente' : 'por videoconferência'
-    }.`,
+    `Passando para lembrar do contato com ${nome}, no dia ${dia}, ${data}, às ${hora}, ${descricaoTipo}.`,
   ]
   if (telefoneContato) linhas.push(`Telefone do contato: ${telefoneContato}`)
   linhas.push('Até lá!')
@@ -131,6 +137,7 @@ export default function Visitas() {
   const [form, setForm] = useState(vazio)
   const [erroForm, setErroForm] = useState('')
   const [mostrarForm, setMostrarForm] = useState(false)
+  const [editandoVisita, setEditandoVisita] = useState(null)
   const [reagendando, setReagendando] = useState(null) // visita sendo reagendada
   const [novaDataReagendar, setNovaDataReagendar] = useState('')
   const [motivoReagendar, setMotivoReagendar] = useState('')
@@ -155,6 +162,7 @@ export default function Visitas() {
         <button
           type="button"
           onClick={() => {
+            setEditandoVisita(null)
             setForm(vazio)
             setErroForm('')
             setMostrarForm(true)
@@ -238,14 +246,35 @@ export default function Visitas() {
       responsavel: form.responsavel || null,
       status: 'agendado',
     }
-    const { error } = await supabase.from('visitas').insert(payload)
+    const resultado = editandoVisita
+      ? await supabase.from('visitas').update(payload).eq('id', editandoVisita.id)
+      : await supabase.from('visitas').insert(payload)
+    const { error } = resultado
     if (error) {
       setErroForm(`Não foi possível salvar o agendamento: ${error.message}`)
       return
     }
     setForm(vazio)
+    setEditandoVisita(null)
     setMostrarForm(false)
     carregar()
+  }
+
+  function abrirEdicao(v) {
+    setEditandoVisita(v)
+    setErroForm('')
+    setForm({
+      nome_lead: v.nome_lead || '',
+      contato_id: v.contato_id || '',
+      data_visita: v.data_visita ? v.data_visita.slice(0, 16) : '',
+      tipo_contato: v.tipo_contato || 'presencial',
+      observacoes: v.observacoes || '',
+      lembrete_para: v.lembrete_para || 'cliente',
+      telefone: v.telefone || telefoneDoContato(v.contatos) || '',
+      responsavel: v.responsavel || '',
+    })
+    setGerenciando(null)
+    setMostrarForm(true)
   }
 
   function abrirReagendar(v) {
@@ -308,31 +337,30 @@ export default function Visitas() {
   }
 
   async function confirmarConversao(v) {
-    // O tipo (cliente final ou revendedora) é escolhido depois, na ficha do Cadastro
-    const { data: novoContato, error: erroContato } = await supabase
-      .from('contatos')
-      .insert({ nome: v.nome_lead || v.contatos?.nome, tipo: 'cliente_final' })
-      .select()
-      .single()
-
-    if (erroContato || !novoContato) {
-      console.error('Erro ao converter visita:', erroContato)
-      alert('Não foi possível converter: ' + (erroContato?.message || 'erro desconhecido'))
+    // Reaproveita o contato vinculado quando já existe; nunca cria duplicata automaticamente.
+    const contatoExistenteId = v.contato_id || v.contatos?.id || null
+    if (contatoExistenteId) {
+      navigate('/cadastro', { state: { editarContatoId: contatoExistenteId, fluxoConversao: true, visitaId: v.id } })
       return
     }
-
-    await supabase
-      .from('visitas')
-      .update({ convertido: true, contato_id: novoContato.id, status: 'concluido' })
-      .eq('id', v.id)
-
-    carregar()
-    // Leva para a página de cadastro para completar os dados do novo contato
-    navigate('/cadastro', { state: { editarContatoId: novoContato.id } })
+    const nomeLead = String(v.nome_lead || v.contatos?.nome || '').trim()
+    if (!nomeLead) {
+      alert('Informe o nome do lead antes de converter a visita.')
+      return
+    }
+    // O novo contato só será criado quando o cadastro for salvo.
+    navigate('/cadastro', { state: { novoLeadNome: nomeLead, fluxoConversao: true, visitaId: v.id } })
   }
 
   async function marcarNaoConvertido(v) {
-    await supabase.from('visitas').update({ convertido: false, tipo_conversao: null }).eq('id', v.id)
+    const { error } = await supabase
+      .from('visitas')
+      .update({ convertido: false, tipo_conversao: null, data_conversao: null })
+      .eq('id', v.id)
+    if (error) {
+      alert(`Não foi possível desfazer a conversão: ${error.message}`)
+      return
+    }
     carregar()
   }
 
@@ -367,7 +395,7 @@ export default function Visitas() {
       .join('')
   }
 
-  // Dados para o gráfico "Visitas x Convertidas em negócio" (últimos 6 meses)
+  // Visitas são atribuídas ao mês agendado; conversões, ao mês em que foram realizadas.
   const dadosMensais = useMemo(() => {
     const meses = []
     const hoje = new Date()
@@ -381,14 +409,30 @@ export default function Visitas() {
       })
     }
     const porChave = Object.fromEntries(meses.map((m) => [m.chave, m]))
+
+    const chaveDaData = (valor) => {
+      if (!valor) return null
+      // data_conversao é uma coluna DATE (AAAA-MM-DD); evitar deslocamento de fuso horário.
+      const texto = String(valor)
+      if (/^\d{4}-\d{2}-\d{2}$/.test(texto)) {
+        const [ano, mes] = texto.split('-').map(Number)
+        return `${ano}-${mes - 1}`
+      }
+      const d = new Date(valor)
+      if (Number.isNaN(d.getTime())) return null
+      return `${d.getFullYear()}-${d.getMonth()}`
+    }
+
     visitas.forEach((v) => {
-      if (!v.data_visita) return
-      const d = new Date(v.data_visita)
-      const chave = `${d.getFullYear()}-${d.getMonth()}`
-      const alvo = porChave[chave]
-      if (!alvo) return
-      alvo.Visitas += 1
-      if (v.convertido) alvo.Convertidas += 1
+      const chaveVisita = chaveDaData(v.data_visita)
+      const mesVisita = chaveVisita ? porChave[chaveVisita] : null
+      if (mesVisita) mesVisita.Visitas += 1
+
+      if (v.convertido && v.data_conversao) {
+        const chaveConversao = chaveDaData(v.data_conversao)
+        const mesConversao = chaveConversao ? porChave[chaveConversao] : null
+        if (mesConversao) mesConversao.Convertidas += 1
+      }
     })
     return meses
   }, [visitas])
@@ -567,7 +611,7 @@ export default function Visitas() {
                         </div>
 
                         <div className="text-[11px] text-mata-ink/60 whitespace-nowrap">
-                          {v.tipo_contato === 'presencial' ? '◉ Presencial' : '▣ Videoconferência'}
+                          {({ presencial: '◉ Presencial', videoconferencia: '▣ Remoto', mensagem: '✉ Mensagem', ligacao: '☎ Ligação' })[v.tipo_contato] || '◉ Presencial'}
                         </div>
 
                         <div className="">
@@ -606,7 +650,7 @@ export default function Visitas() {
 
                         <div className="flex items-center justify-between text-[11px] text-mata-ink/60">
                           <span>{formatarDataHora(v.data_visita)}</span>
-                          <span>{v.tipo_contato === 'presencial' ? '◉ Presencial' : '▣ Videoconferência'}</span>
+                          <span>{({ presencial: '◉ Presencial', videoconferencia: '▣ Remoto', mensagem: '✉ Mensagem', ligacao: '☎ Ligação' })[v.tipo_contato] || '◉ Presencial'}</span>
                         </div>
 
                         <button
@@ -676,7 +720,7 @@ export default function Visitas() {
                   <div className="flex justify-between gap-4">
                     <span className="text-mata-ink/45">Tipo</span>
                     <span className="text-mata-ink">
-                      {gerenciando.tipo_contato === 'presencial' ? 'Presencial' : 'Videoconferência'}
+                      {({ presencial: 'Presencial', videoconferencia: 'Remoto', mensagem: 'Mensagem', ligacao: 'Ligação' })[gerenciando.tipo_contato] || 'Presencial'}
                     </span>
                   </div>
 
@@ -711,39 +755,18 @@ export default function Visitas() {
                   )}
                 </div>
 
-                {(gerenciando.status || 'agendado') !== 'cancelado' && lembreteGer !== 'nenhum' && (
-                  <div className="flex gap-2">
-                    {['cliente', 'ambos'].includes(lembreteGer) && (
-                      <button
-                        type="button"
-                        onClick={() => enviarLembrete('cliente')}
-                        disabled={!telClienteGer}
-                        title={telClienteGer ? 'Abrir o WhatsApp com a mensagem pronta' : 'Visita sem telefone'}
-                        style={{ opacity: telClienteGer ? 1 : 0.45, cursor: telClienteGer ? 'pointer' : 'not-allowed' }}
-                        className="flex-1 px-2 py-2 rounded-lg border border-[#d9b98d] text-[#9A5B20] text-[11px] font-medium hover:bg-[#f8efe3] transition"
-                      >
-                        Lembrar cliente (WhatsApp)
-                      </button>
-                    )}
-                    {['equipe', 'ambos'].includes(lembreteGer) && (
-                      <button
-                        type="button"
-                        onClick={() => enviarLembrete('equipe')}
-                        disabled={!respGer}
-                        title={respGer ? 'Abrir o WhatsApp com a mensagem pronta' : 'Visita sem responsável'}
-                        style={{ opacity: respGer ? 1 : 0.45, cursor: respGer ? 'pointer' : 'not-allowed' }}
-                        className="flex-1 px-2 py-2 rounded-lg border border-[#d9b98d] text-[#9A5B20] text-[11px] font-medium hover:bg-[#f8efe3] transition"
-                      >
-                        Lembrar {respGer ? respGer.nome : 'responsável'} (WhatsApp)
-                      </button>
-                    )}
-                  </div>
-                )}
-
                 {!gerenciando.convertido &&
                   (gerenciando.status || 'agendado') !== 'cancelado' &&
                   (gerenciando.status || 'agendado') !== 'concluido' && (
-                    <div className="flex flex-nowrap gap-1 overflow-x-auto">
+                    <div className="flex flex-nowrap gap-1 items-center">
+                      <button
+                        type="button"
+                        onClick={() => abrirEdicao(gerenciando)}
+                        className="flex-1 min-w-0 px-1 py-2 rounded-lg border border-[#d9b98d] text-[#9A5B20] text-[9px] font-medium whitespace-nowrap hover:bg-[#f8efe3] transition"
+                      >
+                        Editar
+                      </button>
+
                       {(gerenciando.status || 'agendado') === 'agendado' && (
                         <button
                           type="button"
@@ -751,9 +774,9 @@ export default function Visitas() {
                             await atualizarStatus(gerenciando, 'confirmado')
                             setGerenciando(null)
                           }}
-                          className="flex-1 min-w-0 basis-0 px-1.5 py-2 rounded-lg bg-mata-moss text-white text-[10px] font-medium whitespace-nowrap hover:brightness-105 transition"
+                          className="flex-1 min-w-0 px-1 py-2 rounded-lg bg-mata-moss text-white text-[9px] font-medium whitespace-nowrap hover:brightness-105 transition"
                         >
-                          ✓ Confirmar
+                          Confirmar
                         </button>
                       )}
 
@@ -764,7 +787,7 @@ export default function Visitas() {
                           setGerenciando(null)
                           abrirReagendar(visita)
                         }}
-                        className="flex-1 min-w-0 basis-0 px-1.5 py-2 rounded-lg border border-[#d9b98d] text-[#9A5B20] text-[10px] font-medium whitespace-nowrap hover:bg-[#f8efe3] transition"
+                        className="flex-1 min-w-0 px-1 py-2 rounded-lg border border-[#d9b98d] text-[#9A5B20] text-[9px] font-medium whitespace-nowrap hover:bg-[#f8efe3] transition"
                       >
                         Reagendar
                       </button>
@@ -776,7 +799,7 @@ export default function Visitas() {
                           setGerenciando(null)
                           confirmarConversao(visita)
                         }}
-                        className="flex-1 min-w-0 basis-0 px-1.5 py-2 rounded-lg border border-[#B8782D] text-[#9A5B20] text-[10px] font-medium whitespace-nowrap hover:bg-[#f8efe3] transition"
+                        className="flex-1 min-w-0 px-1 py-2 rounded-lg border border-[#B8782D] text-[#9A5B20] text-[9px] font-medium whitespace-nowrap hover:bg-[#f8efe3] transition"
                       >
                         Converter
                       </button>
@@ -788,24 +811,35 @@ export default function Visitas() {
                           setGerenciando(null)
                           abrirCancelar(visita)
                         }}
-                        className="flex-1 min-w-0 basis-0 px-1.5 py-2 rounded-lg border border-red-300 text-red-600 text-[10px] font-medium whitespace-nowrap hover:bg-red-50 transition"
+                        className="flex-1 min-w-0 px-1 py-2 rounded-lg border border-red-300 text-red-600 text-[9px] font-medium whitespace-nowrap hover:bg-red-50 transition"
                       >
                         Cancelar
                       </button>
                     </div>
                   )}
 
-                {gerenciando.convertido && (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      await marcarNaoConvertido(gerenciando)
-                      setGerenciando(null)
-                    }}
-                    className="w-full px-4 py-3 rounded-xl border border-[#eadfce] text-mata-ink/60 text-sm hover:bg-[#f8efe3] transition"
-                  >
-                    Desfazer conversão
-                  </button>
+                {(gerenciando.convertido || (gerenciando.status || 'agendado') === 'cancelado' || (gerenciando.status || 'agendado') === 'concluido') && (
+                  <div className="flex flex-nowrap gap-2 items-center">
+                    <button
+                      type="button"
+                      onClick={() => abrirEdicao(gerenciando)}
+                      className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-[#d9b98d] text-[#9A5B20] text-[11px] font-medium whitespace-nowrap hover:bg-[#f8efe3] transition"
+                    >
+                      Editar
+                    </button>
+                    {gerenciando.convertido && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await marcarNaoConvertido(gerenciando)
+                          setGerenciando(null)
+                        }}
+                        className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-[#eadfce] text-mata-ink/60 text-[11px] whitespace-nowrap hover:bg-[#f8efe3] transition"
+                      >
+                        Desfazer conversão
+                      </button>
+                    )}
+                  </div>
                 )}
 
                 {(gerenciando.status || 'agendado') === 'cancelado' && gerenciando.motivo_cancelamento && (
@@ -902,24 +936,27 @@ export default function Visitas() {
               />
             </div>
 
-            <div className="flex gap-2">
+            <div className="grid grid-cols-4 gap-2">
               {[
                 { v: 'presencial', l: 'Presencial' },
-                { v: 'videoconferencia', l: 'Videoconferência' },
+                { v: 'videoconferencia', l: 'Remoto' },
+                { v: 'mensagem', l: 'Mensagem' },
+                { v: 'ligacao', l: 'Ligação' },
               ].map((op) => (
                 <label
                   key={op.v}
-                  className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm border cursor-pointer ${
+                  className={`min-w-0 flex items-center justify-center text-center px-1 py-2 rounded-lg text-xs sm:text-sm border cursor-pointer ${
                     form.tipo_contato === op.v
                       ? 'bg-mata-copper text-white border-mata-copper'
                       : 'border-mata-sand text-mata-ink/60'
                   }`}
                 >
                   <input
-                    type="checkbox"
+                    type="radio"
+                    name="tipo_contato"
                     checked={form.tipo_contato === op.v}
                     onChange={() => setForm({ ...form, tipo_contato: op.v })}
-                    className="hidden"
+                    className="sr-only"
                   />
                   {op.l}
                 </label>
