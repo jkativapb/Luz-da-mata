@@ -11,7 +11,6 @@ import {
   Legend,
 } from 'recharts'
 import { supabase } from '../supabaseClient'
-import { formatarDataHora } from '../lib/helpers'
 
 const vazio = {
   nome_lead: '',
@@ -79,8 +78,22 @@ function linkWhatsApp(telefone, mensagem) {
   return `https://wa.me/${d}?text=${encodeURIComponent(mensagem)}`
 }
 
+// Datas de visitas são horários de agenda (hora de parede), não instantes UTC.
+// Preserva 14:00 do cadastro mesmo quando o Supabase devolve sufixo +00:00.
+function dataAgenda(valor) {
+  if (!valor) return new Date(NaN)
+  const texto = String(valor)
+  const partes = texto.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/)
+  if (!partes) return new Date(valor)
+  return new Date(Number(partes[1]), Number(partes[2]) - 1, Number(partes[3]), Number(partes[4]), Number(partes[5]), Number(partes[6] || 0))
+}
+function formatarDataHoraAgenda(valor) {
+  const d = dataAgenda(valor)
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
 function partesDaReuniao(dataVisita) {
-  const d = new Date(dataVisita)
+  const d = dataAgenda(dataVisita)
   return {
     dia: d.toLocaleDateString('pt-BR', { weekday: 'long' }),
     data: d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
@@ -149,6 +162,8 @@ export default function Visitas() {
   const [filtroStatus, setFiltroStatus] = useState('')
   const [filtroPeriodo, setFiltroPeriodo] = useState('todos')
   const [gerenciando, setGerenciando] = useState(null)
+  const [semanaOffset, setSemanaOffset] = useState(0)
+  const [diaSelecionado, setDiaSelecionado] = useState(null)
 
   useEffect(() => {
     carregar()
@@ -370,6 +385,43 @@ export default function Visitas() {
   const confirmadas = visitas.filter((v) => (v.status || 'agendado') === 'confirmado').length
   const taxaConversao = totalVisitas ? Math.round((convertidas / totalVisitas) * 100) : 0
 
+  // Agenda semanal: usa as visitas já carregadas do Supabase, inclusive futuras.
+  const inicioSemana = useMemo(() => {
+    const d = new Date()
+    d.setHours(0, 0, 0, 0)
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7) + semanaOffset * 7)
+    return d
+  }, [semanaOffset])
+  const diasSemana = useMemo(() => Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(inicioSemana)
+    d.setDate(d.getDate() + i)
+    return d
+  }), [inicioSemana])
+  const compromissosSemana = useMemo(() => {
+    const fim = new Date(inicioSemana)
+    fim.setDate(fim.getDate() + 7)
+    return visitas.filter((v) => {
+      const data = dataAgenda(v.data_visita)
+      return !Number.isNaN(data.getTime()) && data >= inicioSemana && data < fim && v.status !== 'cancelado'
+    }).sort((a, b) => dataAgenda(a.data_visita) - dataAgenda(b.data_visita))
+  }, [visitas, inicioSemana])
+  const compromissosDia = useMemo(() => diaSelecionado
+    ? compromissosSemana.filter((v) => {
+        const d = dataAgenda(v.data_visita)
+        return !Number.isNaN(d.getTime()) && `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}` === diaSelecionado
+      })
+    : [], [compromissosSemana, diaSelecionado])
+  const visitasMes = useMemo(() => visitas.filter((v) => {
+    const d = dataAgenda(v.data_visita)
+    const hoje = new Date()
+    return !Number.isNaN(d.getTime()) && d.getMonth() === hoje.getMonth() && d.getFullYear() === hoje.getFullYear()
+  }), [visitas])
+  const resumoMes = {
+    agendadas: visitasMes.filter((v) => (v.status || 'agendado') === 'agendado').length,
+    confirmadas: visitasMes.filter((v) => v.status === 'confirmado').length,
+    convertidas: visitasMes.filter((v) => v.convertido).length,
+  }
+
   const buscaNormalizada = busca.trim().toLowerCase()
   const visitasFiltradas = visitas.filter((v) => {
     if (filtroStatus && (v.status || 'agendado') !== filtroStatus) return false
@@ -378,7 +430,7 @@ export default function Visitas() {
       const dias = Number(filtroPeriodo)
       const limite = new Date()
       limite.setDate(limite.getDate() - dias)
-      if (new Date(v.data_visita) < limite) return false
+      if (dataAgenda(v.data_visita) < limite) return false
     }
 
     if (!buscaNormalizada) return true
@@ -457,7 +509,7 @@ export default function Visitas() {
 
       {/* Visão gerencial: gráfico principal + resumo */}
       <section className="grid grid-cols-1 xl:grid-cols-3 gap-[6px] items-stretch">
-        <div className="xl:col-span-2 bg-white/90 border border-[#eadfce] rounded-2xl px-4 sm:px-5 py-2 shadow-[0_10px_30px_rgba(79,45,18,0.05)] h-56 xl:h-[230px] flex flex-col min-w-0">
+        <div className="xl:col-span-2 bg-white/90 border border-[#eadfce] rounded-2xl px-4 sm:px-5 py-2 shadow-[0_10px_30px_rgba(79,45,18,0.05)] h-64 xl:h-[270px] flex flex-col min-w-0">
           <div className="flex items-center justify-between gap-3 mb-2">
             <div>
               <p className="font-display text-xl text-mata-ink">Visitas x Conversões em Negócio</p>
@@ -482,29 +534,52 @@ export default function Visitas() {
           </div>
         </div>
 
-        <div className="xl:col-span-1 bg-white/90 border border-[#eadfce] rounded-2xl px-4 sm:px-5 py-1 shadow-[0_10px_30px_rgba(77,45,18,0.05)] h-56 xl:h-[230px] min-w-0">
-          <div className="flex items-center gap-2 mb-3">
-            <span className="text-[#9A5B20] text-xl">▣</span>
-            <h3 className="font-display text-lg text-mata-ink">Resumo</h3>
+        <div className="xl:col-span-1 bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-2 shadow-[0_10px_30px_rgba(77,45,18,0.05)] h-64 xl:h-[270px] min-w-0 flex flex-col">
+          <div className="flex items-center justify-between mb-1">
+            <h3 className="font-display text-base text-mata-ink">Resumo do mês</h3>
+            <span className="text-[10px] text-mata-ink/50">{new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}</span>
           </div>
-
-          <div className="divide-y divide-[#eadfce]">
-            <div className="flex items-center justify-between py-3">
-              <span className="text-sm text-mata-ink/65">Agendadas</span>
-              <span className="font-display text-2xl text-[#9A5B20]">{agendadas}</span>
+          <div className="grid grid-cols-3 gap-1 mb-1">
+            {[{ nome: 'Agendadas', valor: resumoMes.agendadas }, { nome: 'Confirmadas', valor: resumoMes.confirmadas }, { nome: 'Convertidas', valor: resumoMes.convertidas }].map((item) => (
+              <div key={item.nome} className="rounded-lg border border-[#eadfce] bg-[#fbf7f0] py-0.5 text-center min-w-0">
+                <div className="font-display text-base text-[#9A5B20] leading-4">{item.valor}</div>
+                <div className="text-[8px] text-mata-ink/65 truncate">{item.nome}</div>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center justify-between gap-1 mb-1">
+            <h3 className="font-display text-base text-mata-ink">Agenda da semana</h3>
+            <div className="flex items-center gap-1 text-[10px]">
+              <button type="button" aria-label="Semana anterior" onClick={() => { setSemanaOffset((n) => n - 1); setDiaSelecionado(null) }} className="px-2 py-0.5 border border-[#eadfce] rounded-md hover:bg-[#f8efe3]">‹</button>
+              <button type="button" onClick={() => { setSemanaOffset(0); setDiaSelecionado(null) }} className="px-1 text-[#9A5B20]">Hoje</button>
+              <button type="button" aria-label="Próxima semana" onClick={() => { setSemanaOffset((n) => n + 1); setDiaSelecionado(null) }} className="px-2 py-0.5 border border-[#eadfce] rounded-md hover:bg-[#f8efe3]">›</button>
             </div>
-            <div className="flex items-center justify-between py-3">
-              <span className="text-sm text-mata-ink/65">Confirmadas</span>
-              <span className="font-display text-2xl text-mata-moss">{confirmadas}</span>
-            </div>
-            <div className="flex items-center justify-between py-3">
-              <span className="text-sm text-mata-ink/65">Convertidas</span>
-              <span className="font-display text-2xl text-mata-moss">{convertidas}</span>
-            </div>
-            <div className="flex items-center justify-between py-3">
-              <span className="text-sm text-mata-ink/65">Taxa de conversão</span>
-              <span className="font-display text-2xl text-[#9A5B20]">{taxaConversao}%</span>
-            </div>
+          </div>
+          <div className="grid grid-cols-7 gap-1 mb-2">
+            {diasSemana.map((d) => {
+              const hoje = d.toDateString() === new Date().toDateString()
+              const chave = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+              const selecionado = diaSelecionado === chave
+              const quantidade = compromissosSemana.filter((v) => dataAgenda(v.data_visita).toDateString() === d.toDateString()).length
+              return <button type="button" key={chave} onClick={() => setDiaSelecionado(selecionado ? null : chave)} aria-pressed={selecionado}
+                className={`text-center rounded-lg py-1.5 border transition ${selecionado ? 'bg-[#9A5B20] text-white border-[#9A5B20]' : hoje ? 'bg-[#f3e5cf] border-[#B8782D] text-mata-ink' : 'bg-[#fbf7f0] border-[#eadfce] text-mata-ink hover:bg-[#f3e5cf]'}`}>
+                <div className="text-[9px]">{['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'][d.getDay()]}</div>
+                <div className="text-sm font-semibold">{d.getDate()}</div>
+                <div className="text-[9px]">{quantidade ? `${quantidade} visita${quantidade > 1 ? 's' : ''}` : '—'}</div>
+              </button>
+            })}
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1 border-t border-[#eadfce] pt-2">
+            {!diaSelecionado ? (
+              <p className="text-xs text-mata-ink/50 py-2 text-center">Selecione um dia para visualizar os compromissos.</p>
+            ) : compromissosDia.length === 0 ? (
+              <p className="text-xs text-mata-ink/50 py-2 text-center">Nenhum compromisso neste dia.</p>
+            ) : compromissosDia.map((v) => (
+              <button key={v.id} type="button" onClick={() => setGerenciando(v)} className="w-full flex items-center justify-between gap-2 rounded-md px-2 py-1.5 bg-[#fbf7f0] hover:bg-[#f3e5cf] text-left">
+                <span className="text-xs text-mata-ink truncate">{v.nome_lead || v.contatos?.nome || 'Sem nome'} <span className="text-mata-ink/45">· {v.responsavel || 'Sem responsável'}</span></span>
+                <span className="text-[11px] text-[#9A5B20] whitespace-nowrap">{dataAgenda(v.data_visita).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
+              </button>
+            ))}
           </div>
         </div>
       </section>
@@ -580,7 +655,7 @@ export default function Visitas() {
                   : 'Nenhuma visita agendada ainda.'}
               </p>
             ) : (
-              <div className="h-[360px] md:h-[200px] overflow-y-scroll divide-y divide-[#eadfce]" style={{ scrollbarGutter: "stable" }}>
+              <div className="h-[240px] md:h-[140px] overflow-y-auto divide-y divide-[#eadfce]" style={{ scrollbarGutter: "stable" }}>
                 {visitasFiltradas.map((v) => {
                   const status = v.status || 'agendado'
                   const nome = v.nome_lead || v.contatos?.nome || 'Sem nome'
@@ -607,7 +682,7 @@ export default function Visitas() {
                         </div>
 
                         <div className="text-[11px] text-mata-ink/60 whitespace-nowrap">
-                          {formatarDataHora(v.data_visita)}
+                          {formatarDataHoraAgenda(v.data_visita)}
                         </div>
 
                         <div className="text-[11px] text-mata-ink/60 whitespace-nowrap">
@@ -649,7 +724,7 @@ export default function Visitas() {
                         </div>
 
                         <div className="flex items-center justify-between text-[11px] text-mata-ink/60">
-                          <span>{formatarDataHora(v.data_visita)}</span>
+                          <span>{formatarDataHoraAgenda(v.data_visita)}</span>
                           <span>{({ presencial: '◉ Presencial', videoconferencia: '▣ Remoto', mensagem: '✉ Mensagem', ligacao: '☎ Ligação' })[v.tipo_contato] || '◉ Presencial'}</span>
                         </div>
 
@@ -674,10 +749,10 @@ export default function Visitas() {
         {/* Gerenciar visita - sempre visível ao lado da agenda no desktop */}
         <aside className="w-full bg-[#fffdfa] border border-[#eadfce] rounded-2xl shadow-[0_8px_26px_rgba(77,45,18,0.06)] overflow-hidden min-w-0 xl:col-span-1 xl:self-start">
           {!gerenciando ? (
-            <div className="h-[300px] xl:h-[326px] flex flex-col">
+            <div className="h-[260px] xl:h-[270px] flex flex-col">
               <div className="px-3 py-2 border-b border-[#eadfce]">
                 <p className="text-xs uppercase tracking-[0.08em] text-mata-ink/45">Gerenciar visita</p>
-                <h3 className="font-display text-xl text-mata-ink mt-1">Selecione um agendamento</h3>
+                <h3 className="font-display text-lg text-mata-ink mt-0.5">Selecione um agendamento</h3>
               </div>
 
               <div className="flex-1 flex items-center justify-center p-5 text-center">
@@ -692,11 +767,11 @@ export default function Visitas() {
               </div>
             </div>
           ) : (
-            <div className="h-[300px] xl:h-[340px] flex flex-col overflow-y-auto min-h-0">
+            <div className="h-[260px] xl:h-[285px] flex flex-col overflow-y-auto min-h-0">
               <div className="px-3 py-2 border-b border-[#eadfce] flex items-center justify-between sticky top-0 bg-[#fffdfa] z-10">
                 <div>
                   <p className="text-xs uppercase tracking-[0.08em] text-mata-ink/20">Gerenciar visita</p>
-                  <h3 className="font-display text-xl text-mata-ink mt-1">
+                  <h3 className="font-display text-lg text-mata-ink mt-0.5">
                     {gerenciando.nome_lead || gerenciando.contatos?.nome || 'Visita'}
                   </h3>
                 </div>
@@ -710,11 +785,11 @@ export default function Visitas() {
                 </button>
               </div>
 
-              <div className="p-5 space-y-4">
-                <div className="bg-[#fbf7f0] border border-[#eadfce] rounded-2xl p-4 space-y-3 text-sm">
+              <div className="p-3 space-y-2">
+                <div className="bg-[#fbf7f0] border border-[#eadfce] rounded-xl p-3 space-y-2 text-xs">
                   <div className="flex justify-between gap-4">
                     <span className="text-mata-ink/45">Data e hora</span>
-                    <span className="text-mata-ink text-right">{formatarDataHora(gerenciando.data_visita)}</span>
+                    <span className="text-mata-ink text-right">{formatarDataHoraAgenda(gerenciando.data_visita)}</span>
                   </div>
 
                   <div className="flex justify-between gap-4">
@@ -1008,7 +1083,7 @@ export default function Visitas() {
           <form onSubmit={confirmarReagendamento} className="bg-[#fffdfa] border border-[#eadfce] rounded-2xl p-5 sm:p-6 w-full max-w-sm space-y-4 shadow-2xl">
             <h3 className="font-display text-xl">Reagendar visita</h3>
             <p className="text-sm text-mata-ink/60">
-              {reagendando.nome_lead || reagendando.contatos?.nome} — data atual: {formatarDataHora(reagendando.data_visita)}
+              {reagendando.nome_lead || reagendando.contatos?.nome} — data atual: {formatarDataHoraAgenda(reagendando.data_visita)}
             </p>
 
             <div>
@@ -1052,7 +1127,7 @@ export default function Visitas() {
           <form onSubmit={confirmarCancelamento} className="bg-[#fffdfa] border border-[#eadfce] rounded-2xl p-5 sm:p-6 w-full max-w-sm space-y-4 shadow-2xl">
             <h3 className="font-display text-xl">Cancelar visita</h3>
             <p className="text-sm text-mata-ink/60">
-              {cancelando.nome_lead || cancelando.contatos?.nome} — {formatarDataHora(cancelando.data_visita)}
+              {cancelando.nome_lead || cancelando.contatos?.nome} — {formatarDataHoraAgenda(cancelando.data_visita)}
             </p>
 
             <div>
