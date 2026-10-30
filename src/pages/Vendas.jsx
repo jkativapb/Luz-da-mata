@@ -244,8 +244,7 @@ export default function Vendas() {
 
   function montarParcelas(total, quantidade, dataBase) {
     const valorTotal = Math.max(0, Number(total || 0))
-    const comEntrada = quantidade === 'entrada2x'
-    const partes = comEntrada ? 3 : Math.max(1, Math.min(60, parseInt(quantidade, 10) || 1))
+    const partes = quantidade === '3x' ? 3 : quantidade === '2x' ? 2 : 1
     const valorBase = Number((valorTotal / partes).toFixed(2))
     const parcelas = []
 
@@ -257,7 +256,7 @@ export default function Vendas() {
         numero: i + 1,
         percentual: 100 / partes,
         valor,
-        vencimento: adicionarDias(dataBase, 30 * (comEntrada ? i : i + 1)),
+        vencimento: adicionarDias(dataBase, 30 * (i + 1)),
       })
     }
 
@@ -265,13 +264,6 @@ export default function Vendas() {
   }
 
   function atualizarSituacaoPagamento(valor) {
-    const original = vendas.find((v) => v.id === form.id)
-    if (original?.situacao_pagamento === 'pago' || parcelasPreview.some((p) => p.pago)) {
-      if (valor !== situacaoPagamento) {
-        alert('Preserve os recebimentos registrados. Para ajustar o saldo, mantenha a situação atual e edite as parcelas em aberto.')
-        return
-      }
-    }
     setSituacaoPagamento(valor)
     setForm((atual) => ({
       ...atual,
@@ -281,23 +273,13 @@ export default function Vendas() {
   }
 
   function atualizarParcelamento(valor) {
-    if (vendas.find((v) => v.id === form.id)?.situacao_pagamento === 'pago') { alert('Venda já quitada.'); return }
-    const pagas = parcelasPreview.filter((p) => p.pago)
-    const saldo = Math.round((totalLiquido - pagas.reduce((s, p) => s + Number(p.valor), 0)) * 100) / 100
-    if (saldo <= 0 && pagas.length) {
-      alert('Esta venda já está quitada. Os recebimentos registrados serão preservados.')
+    if (valor === parcelamento) return
+    if (form.parcelas_json?.some((p) => p.pago)) {
+      alert('Existem parcelas já pagas. O parcelamento foi preservado para não alterar os recebimentos registrados.')
       return
     }
-    const novas = montarParcelas(saldo, valor, form.data_venda)
-    const maiorNumero = Math.max(0, ...pagas.map((p) => Number(p.numero)))
     setParcelamento(valor)
-    setForm((atual) => ({ ...atual, parcelamento: valor, parcelas_json: [
-      ...pagas,
-      ...novas.map((p, i) => ({ ...p, numero: maiorNumero + i + 1,
-        percentual: totalLiquido ? Number(p.valor) / totalLiquido * 100 : 0,
-        forma_pagamento: atual.forma_pagamento,
-      })),
-    ] }))
+    setForm((atual) => ({ ...atual, parcelamento: valor, parcelas_json: [] }))
   }
 
   function diminuirQuantidade(idx) {
@@ -357,7 +339,7 @@ export default function Vendas() {
   // Monta os campos de pagamento. Se todas as parcelas estiverem marcadas como pagas,
   // a venda vira "pago" (a data é a da última baixa) e as parcelas continuam guardadas.
   function camposPagamento(sit, dataVenda) {
-    const parcelas = sit === 'a_receber' || parcelasPreview.some((p) => p.pago) ? parcelasPreview : []
+    const parcelas = sit === 'a_receber' ? parcelasPreview : []
     const todasPagas = parcelas.length > 0 && parcelas.every((p) => p.pago)
     const ultimaBaixa = parcelas.map((p) => p.pago_em).filter(Boolean).sort().pop()
     return {
@@ -366,7 +348,7 @@ export default function Vendas() {
         ? (ultimaBaixa || dataVenda)
         : (sit === 'pago' ? (form.data_pagamento || dataVenda) : null),
       forma_pagamento: form.forma_pagamento,
-      parcelamento: parcelas.length ? parcelamento : null,
+      parcelamento: sit === 'a_receber' ? parcelamento : null,
       parcelas_json: parcelas,
       data_retorno_condicional: sit === 'condicional' ? (form.data_retorno_condicional || null) : null,
     }
@@ -374,13 +356,6 @@ export default function Vendas() {
 
   async function salvar(e) {
     e.preventDefault()
-    if (situacaoPagamento === 'a_receber') {
-      const soma = parcelasPreview.reduce((s, p) => s + Math.round(Number(p.valor) * 100), 0)
-      if (parcelasPreview.some((p) => !Number.isFinite(Number(p.valor)) || Number(p.valor) <= 0 || !p.vencimento) || soma !== Math.round(totalLiquido * 100)) {
-        alert('Confira os valores e vencimentos: a soma das parcelas deve ser igual ao total da venda.')
-        return
-      }
-    }
 
     // Venda com NF: só pagamento e datas. Itens, cliente, valores e NF não são tocados.
     if (modoPagamento && form.id) {
@@ -698,7 +673,6 @@ export default function Vendas() {
   const totalLiquido = Math.max(0, subtotalForm - descontoVenda)
   const parcelasPreviewBase = montarParcelas(totalLiquido, parcelamento, form.data_venda)
   const parcelasPreview = form.parcelas_json?.length ? form.parcelas_json : parcelasPreviewBase
-  const parcelaProtegida = (p) => Boolean(vendas.find((v) => v.id === form.id)?.parcelas_json?.some((original) => original.numero === p.numero && original.pago))
   const totalForm = totalLiquido
 
   // Total líquido da venda: soma dos itens menos o desconto da venda (desconto_venda).
@@ -1765,11 +1739,10 @@ export default function Vendas() {
                             <div className="flex items-center justify-between gap-2 mb-2">
                               <div>
                                 <p className="text-[11px] font-medium text-[#3c2a1f]">Parcelamento</p>
-                                <p className="text-[9px] text-[#8b796a]">Ajuste valores e datas. Parcelas já recebidas ficam preservadas. Entrada não é marcada como paga automaticamente.</p>
+                                <p className="text-[9px] text-[#8b796a]">Vencimentos calculados a partir da data da venda.</p>
                               </div>
-                              <div className="flex flex-wrap gap-1.5">
-                                <label className="text-[10px]">Parcelas do saldo <input aria-label="Quantidade de parcelas do saldo" type="number" min="1" max="60" defaultValue="2" onBlur={(e) => atualizarParcelamento(`${Math.max(1, Math.min(60, Number(e.target.value) || 1))}x`)} className="w-12 border rounded px-1" /></label>
-                                {[['1x', '1x'], ['2x', '2x'], ['entrada2x', 'Entrada + 2x']].map(([valor, label]) => (
+                              <div className="flex flex-wrap justify-end gap-1.5">
+                                {[['1x', '01x — 30 dias'], ['2x', '02x — 30 e 60 dias'], ['3x', '03x — 30, 60 e 90 dias']].map(([valor, label]) => (
                                   <button key={valor} type="button" onClick={() => atualizarParcelamento(valor)} className={`rounded-lg border px-2.5 py-1.5 text-[10px] transition ${parcelamento === valor ? 'border-[#B8782D] bg-[#fff4e4] text-[#7b451e]' : 'border-[#decfbd] bg-white text-[#5d5148]'}`}>
                                     {label}
                                   </button>
@@ -1782,18 +1755,17 @@ export default function Vendas() {
                             <div className="divide-y divide-[#eee3d5]">
                               {parcelasPreview.map((parcela) => (
                                 <div key={parcela.numero} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 90px 140px 70px', columnGap: 8 }} className="items-center px-2 py-1.5">
-                                  <div><span className="text-[10px] text-[#3f3025]">Parcela {parcela.numero}/{parcelasPreview.length}{parcelaProtegida(parcela) ? ' — paga' : ''}</span><select aria-label={`Forma da parcela ${parcela.numero}`} disabled={parcelaProtegida(parcela)} value={parcela.forma_pagamento || form.forma_pagamento || 'Outro'} onChange={(e) => setForm({ ...form, parcelas_json: parcelasPreview.map((p) => p.numero === parcela.numero ? { ...p, forma_pagamento: e.target.value } : p) })} className="block w-full border rounded text-[10px]">{['Pix','Dinheiro','Cartão de crédito','Cartão de débito','Boleto','Transferência','Outro'].map((f) => <option key={f}>{f}</option>)}</select></div>
-                                  <input aria-label={`Valor da parcela ${parcela.numero}`} type="number" min="0.01" step="0.01" disabled={parcelaProtegida(parcela)} value={parcela.valor} onChange={(e) => setForm({ ...form, parcelas_json: parcelasPreview.map((p) => p.numero === parcela.numero ? { ...p, valor: e.target.value, percentual: totalLiquido ? Number(e.target.value) / totalLiquido * 100 : 0 } : p) })} className="w-full border rounded px-1 text-[11px]" />
-                                  <input type="date" disabled={parcelaProtegida(parcela)} value={parcela.vencimento} onChange={(e) => setForm({ ...form, parcelas_json: parcelasPreview.map((p) => p.numero === parcela.numero ? { ...p, vencimento: e.target.value } : p) })} className="w-full border border-[#decfbd] bg-white rounded-lg px-2 py-1.5 text-[10px] outline-none" />
+                                  <span className="text-[10px] text-[#3f3025]">Parcela {parcela.numero}/{parcelasPreview.length} — {Math.round(parcela.percentual)}%</span>
+                                  <span className="text-right text-[11px] font-medium text-[#2f2118]">{formatarMoeda(parcela.valor)}</span>
+                                  <input type="date" value={parcela.vencimento} onChange={(e) => setForm({ ...form, parcelas_json: parcelasPreview.map((p) => p.numero === parcela.numero ? { ...p, vencimento: e.target.value } : p) })} className="w-full border border-[#decfbd] bg-white rounded-lg px-2 py-1.5 text-[10px] outline-none" />
                                   <label className="flex items-center justify-center cursor-pointer" title={parcela.pago ? `Paga em ${formatarData(parcela.pago_em)}` : 'Marcar como paga'}>
                                     <input
                                       type="checkbox"
-                                      disabled={parcelaProtegida(parcela)}
                                       checked={Boolean(parcela.pago)}
                                       onChange={(e) => setForm({
                                         ...form,
                                         parcelas_json: parcelasPreview.map((p) => p.numero === parcela.numero
-                                          ? { ...p, forma_pagamento: p.forma_pagamento || form.forma_pagamento, pago: e.target.checked, pago_em: e.target.checked ? (p.pago_em || hojeLocal()) : null }
+                                          ? { ...p, pago: e.target.checked, pago_em: e.target.checked ? (p.pago_em || hojeLocal()) : null }
                                           : p),
                                       })}
                                       className="accent-[#4b7a4f] w-4 h-4"
