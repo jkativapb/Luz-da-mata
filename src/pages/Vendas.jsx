@@ -75,6 +75,7 @@ export default function Vendas() {
   // true = venda com NF aberta só para ajustar o pagamento (todo o resto fica travado)
   const [modoPagamento, setModoPagamento] = useState(false)
   const [parcelamento, setParcelamento] = useState('1x')
+  const [comEntrada, setComEntrada] = useState(false)
   const [itensForm, setItensForm] = useState([
     { produto_id: '', produto_nome: '', quantidade: 1, valor_unitario: 0, preco_base: 0, desconto_percentual: 0, tipo_cliente: 'cliente_final' },
   ])
@@ -90,6 +91,7 @@ export default function Vendas() {
     setForm({ ...vendaVazia, contato_id: contatoId, data_venda: hoje, data_pagamento: hoje, situacao_pagamento: 'pago', parcelamento: '1x', parcelas_json: [], data_retorno_condicional: '', desconto_venda: 0 })
     setSituacaoPagamento('pago')
     setParcelamento('1x')
+    setComEntrada(false)
     setItensForm([{ produto_id: '', produto_nome: '', quantidade: 1, valor_unitario: 0, preco_base: 0, desconto_percentual: 0, tipo_cliente: 'cliente_final', quantidade_vendida: 0, quantidade_devolvida: 0 }])
     setModoPagamento(false)
     setMostrarForm(true)
@@ -108,6 +110,7 @@ export default function Vendas() {
             setForm({ ...vendaVazia, data_venda: hoje, data_pagamento: hoje, situacao_pagamento: 'pago', parcelamento: '1x', parcelas_json: [], data_retorno_condicional: '', desconto_venda: 0 })
             setSituacaoPagamento('pago')
             setParcelamento('1x')
+    setComEntrada(false)
             setItensForm([{ produto_id: '', produto_nome: '', quantidade: 1, valor_unitario: 0, preco_base: 0, desconto_percentual: 0, tipo_cliente: 'cliente_final', quantidade_vendida: 0, quantidade_devolvida: 0 }])
             setModoPagamento(false)
             setMostrarForm(true)
@@ -242,9 +245,9 @@ export default function Vendas() {
     return dataParaISO(d)
   }
 
-  function montarParcelas(total, quantidade, dataBase) {
+  function montarParcelas(total, quantidade, dataBase, entrada = false) {
     const valorTotal = Math.max(0, Number(total || 0))
-    const partes = quantidade === '3x' ? 3 : quantidade === '2x' ? 2 : 1
+    const partes = (quantidade === '3x' ? 3 : quantidade === '2x' ? 2 : 1) + (entrada ? 1 : 0)
     const valorBase = Number((valorTotal / partes).toFixed(2))
     const parcelas = []
 
@@ -254,9 +257,10 @@ export default function Vendas() {
         : valorBase
       parcelas.push({
         numero: i + 1,
+        entrada: entrada && i === 0,
         percentual: 100 / partes,
         valor,
-        vencimento: adicionarDias(dataBase, 30 * (i + 1)),
+        vencimento: adicionarDias(dataBase, 30 * (entrada ? i : i + 1)),
       })
     }
 
@@ -331,6 +335,7 @@ export default function Vendas() {
     setItensForm(itens.length ? itens : [{ produto_id: '', produto_nome: '', quantidade: 1, valor_unitario: 0, preco_base: 0, desconto_percentual: 0, tipo_cliente: 'cliente_final', quantidade_vendida: 0, quantidade_devolvida: 0 }])
     setSituacaoPagamento(venda.situacao_pagamento || 'pago')
     setParcelamento(venda.parcelamento || '1x')
+    setComEntrada(Boolean(venda.parcelas_json?.some((p) => p.entrada)))
     setVendaSelecionada(venda)
     setModoPagamento(Boolean(soPagamento && venda.nf_transmitida))
     setMostrarForm(true)
@@ -379,6 +384,7 @@ export default function Vendas() {
       setForm(vendaVazia)
       setSituacaoPagamento('pago')
       setParcelamento('1x')
+    setComEntrada(false)
       setModoPagamento(false)
       setMostrarForm(false)
       return
@@ -539,6 +545,7 @@ export default function Vendas() {
     setForm(vendaVazia)
     setSituacaoPagamento('pago')
     setParcelamento('1x')
+    setComEntrada(false)
     setItensForm([{ produto_id: '', produto_nome: '', quantidade: 1, valor_unitario: 0, preco_base: 0, desconto_percentual: 0, tipo_cliente: 'cliente_final' }])
     setModoPagamento(false)
     setMostrarForm(false)
@@ -671,7 +678,7 @@ export default function Vendas() {
   )
   const descontoVenda = Math.max(0, Number(form.desconto_venda || 0))
   const totalLiquido = Math.max(0, subtotalForm - descontoVenda)
-  const parcelasPreviewBase = montarParcelas(totalLiquido, parcelamento, form.data_venda)
+  const parcelasPreviewBase = montarParcelas(totalLiquido, parcelamento, form.data_venda, comEntrada)
   const parcelasPreview = form.parcelas_json?.length ? form.parcelas_json : parcelasPreviewBase
   const totalForm = totalLiquido
 
@@ -1736,26 +1743,33 @@ export default function Vendas() {
 
                         {situacaoPagamento === 'a_receber' && (
                           <div className="mt-2.5 rounded-xl border border-[#decfbd] bg-[#fffaf3] p-2.5">
-                            <div className="flex items-center justify-between gap-2 mb-2">
-                              <div>
-                                <p className="text-[11px] font-medium text-[#3c2a1f]">Parcelamento</p>
-                                <p className="text-[9px] text-[#8b796a]">Vencimentos calculados a partir da data da venda.</p>
-                              </div>
-                              <div className="flex flex-wrap justify-end gap-1.5">
-                                {[['1x', '01x — 30 dias'], ['2x', '02x — 30 e 60 dias'], ['3x', '03x — 30, 60 e 90 dias']].map(([valor, label]) => (
-                                  <button key={valor} type="button" onClick={() => atualizarParcelamento(valor)} className={`rounded-lg border px-2.5 py-1.5 text-[10px] transition ${parcelamento === valor ? 'border-[#B8782D] bg-[#fff4e4] text-[#7b451e]' : 'border-[#decfbd] bg-white text-[#5d5148]'}`}>
-                                    {label}
-                                  </button>
-                                ))}
-                              </div>
+                            <p className="text-[11px] font-medium text-[#3c2a1f] mb-2">Parcelamento</p>
+                            <div className="grid grid-cols-3 gap-2 mb-2">
+                              {[['1x', '30 dias'], ['2x', '30 - 60 dias'], ['3x', '30 - 60 - 90 dias']].map(([valor, label]) => (
+                                <button key={valor} type="button" onClick={() => atualizarParcelamento(valor)} className={`flex items-center gap-2 rounded-xl border px-2 py-2 text-left transition ${parcelamento === valor ? 'border-[#B8782D] bg-[#fff4e4] text-[#7b451e]' : 'border-[#decfbd] bg-white text-[#5d5148]'}`}>
+                                  <span className={`w-4 h-4 shrink-0 rounded-full border ${parcelamento === valor ? 'border-[#B8782D] bg-[#B8782D] shadow-[inset_0_0_0_3px_#fff4e4]' : 'border-[#cfc2b4]'}`} />
+                                  <span><strong className="block text-[12px]">{valor}</strong><span className="text-[10px]">{label}</span></span>
+                                </button>
+                              ))}
                             </div>
+                            <label className="flex items-center gap-2 mb-2 text-[11px] text-[#5d5148] cursor-pointer">
+                              <input type="checkbox" checked={comEntrada} onChange={(e) => {
+                                if (form.parcelas_json?.some((p) => p.pago)) {
+                                  alert('Existem parcelas já pagas. Os recebimentos registrados serão preservados.')
+                                  return
+                                }
+                                setComEntrada(e.target.checked)
+                                setForm((atual) => ({ ...atual, parcelas_json: [] }))
+                              }} className="accent-[#9A5B20]" />
+                              Com entrada <span className="text-[9px] text-[#8b796a]">Desmarcado: sem entrada</span>
+                            </label>
                             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 90px 140px 70px', columnGap: 8 }} className="items-center px-2 py-1.5 rounded-lg bg-[#f1e8dc] text-[9px] text-[#5b4636] font-medium">
                               <span>Parcela</span><span className="text-right">Valor</span><span className="text-right">Vencimento</span><span className="text-center">Pagamento</span>
                             </div>
                             <div className="divide-y divide-[#eee3d5]">
                               {parcelasPreview.map((parcela) => (
                                 <div key={parcela.numero} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 90px 140px 70px', columnGap: 8 }} className="items-center px-2 py-1.5">
-                                  <span className="text-[10px] text-[#3f3025]">Parcela {parcela.numero}/{parcelasPreview.length} — {Math.round(parcela.percentual)}%</span>
+                                  <span className="text-[10px] text-[#3f3025]">{parcela.entrada ? 'Entrada' : `Parcela ${parcela.numero - (comEntrada ? 1 : 0)}/${parcelasPreview.length - (comEntrada ? 1 : 0)}`}</span>
                                   <span className="text-right text-[11px] font-medium text-[#2f2118]">{formatarMoeda(parcela.valor)}</span>
                                   <input type="date" value={parcela.vencimento} onChange={(e) => setForm({ ...form, parcelas_json: parcelasPreview.map((p) => p.numero === parcela.numero ? { ...p, vencimento: e.target.value } : p) })} className="w-full border border-[#decfbd] bg-white rounded-lg px-2 py-1.5 text-[10px] outline-none" />
                                   <label className="flex items-center justify-center cursor-pointer" title={parcela.pago ? `Paga em ${formatarData(parcela.pago_em)}` : 'Marcar como paga'}>
