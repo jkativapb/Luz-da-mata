@@ -373,7 +373,8 @@ export default function Dashboard() {
   const chaveDataFinanceira = (data) => data
     ? `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, '0')}` : null
   const pertenceAoMesFinanceiro = (data) => !mesFinanceiro || chaveDataFinanceira(data) === mesFinanceiro
-  const atrasoFiltrado = contasEmAtraso.filter((c) => pertenceAoMesFinanceiro(c.vencimento))
+  // Atrasos permanecem visíveis de todos os meses até a baixa.
+  const atrasoFiltrado = contasEmAtraso
   const vencerFiltrado = contasAVencer.filter((c) => pertenceAoMesFinanceiro(c.vencimento))
   const recebidosFiltrados = mesFinanceiro
     ? contasRecebidas.filter((c) => chaveDataFinanceira(c.dataPagamento) === mesFinanceiro)
@@ -572,7 +573,7 @@ export default function Dashboard() {
         <div className="bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-[8px] shadow-[0_10px_30px_rgba(77,45,18,0.05)]">
           <div className="flex items-center justify-between gap-2 mb-[6px]"><div className="flex items-center gap-3"><span className="text-[#9A5B20] text-[17px]">◷</span><h3 className="font-display text-[15px] text-mata-ink">Contas a receber{mesFinanceiro ? ` · ${rotuloMes(mesFinanceiro)}` : ''}</h3></div>{mesFinanceiro ? <button type="button" onClick={() => { setMesFinanceiro(null); setContasModal(null) }} className="text-[9px] text-[#9A5B20] underline">Limpar seleção</button> : <span className="text-[9px] text-mata-ink/50">Visão financeira</span>}</div>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-x-px gap-y-2 mb-[6px]">
-            <button type="button" onClick={() => setContasModal('atraso')} className="text-left rounded-xl bg-red-50/80 border border-red-100 px-2.5 py-2 hover:shadow-md transition" title="Ver parcelas em atraso"><p className="text-[9px] text-red-700/75">Em atraso</p><p className="font-display text-[15px] text-red-700">{formatarMoeda(atrasoTotalFiltrado)}</p><p className="text-[9px] text-red-700/60">{String(atrasoFiltrado.length).padStart(2, '0')} {atrasoFiltrado.length === 1 ? 'registro' : 'registros'}</p></button>
+            <button type="button" onClick={() => setContasModal('atraso')} className="text-left rounded-xl bg-red-50/80 border border-red-100 px-2.5 py-2 hover:shadow-md transition" title="Ver todas as parcelas em atraso, independentemente do mês selecionado"><p className="text-[9px] text-red-700/75">Em atraso</p><p className="font-display text-[15px] text-red-700">{formatarMoeda(atrasoTotalFiltrado)}</p><p className="text-[9px] text-red-700/60">{String(atrasoFiltrado.length).padStart(2, '0')} {atrasoFiltrado.length === 1 ? 'registro' : 'registros'}</p></button>
             <button type="button" onClick={() => setContasModal('vencer')} className="text-left rounded-xl bg-amber-50/80 border border-amber-100 px-2.5 py-2 hover:shadow-md transition" title="Ver parcelas a vencer"><p className="text-[9px] text-amber-700/75">A vencer</p><p className="font-display text-[15px] text-amber-700">{formatarMoeda(vencerTotalFiltrado)}</p><p className="text-[9px] text-amber-700/60">{String(vencerFiltrado.length).padStart(2, '0')} {vencerFiltrado.length === 1 ? 'registro' : 'registros'}</p></button>
             <button type="button" onClick={() => setContasModal('recebido')} className="text-left rounded-xl bg-green-50/80 border border-green-100 px-2.5 py-2 hover:shadow-md transition" title="Ver pagamentos recebidos no mês"><p className="text-[9px] text-green-700/75">Recebidos no mês</p><p className="font-display text-[15px] text-green-700">{formatarMoeda(recebidoTotalFiltrado)}</p><p className="text-[9px] text-green-700/60">{String(recebidosFiltrados.length).padStart(2, '0')} {recebidosFiltrados.length === 1 ? 'registro' : 'registros'}</p></button>
             <button type="button" onClick={() => setContasModal('recebido_anterior')} className="text-left rounded-xl bg-blue-50/80 border border-blue-100 px-2.5 py-2 hover:shadow-md transition" title="Ver recebimentos de vendas realizadas antes deste mês"><p className="text-[9px] text-blue-700/75">Recebidos de vendas anteriores</p><p className="font-display text-[15px] text-blue-700">{formatarMoeda(anterioresTotalFiltrado)}</p><p className="text-[9px] text-blue-700/60">{String(anterioresFiltrados.length).padStart(2, '0')} {anterioresFiltrados.length === 1 ? 'registro' : 'registros'}</p></button>
@@ -744,14 +745,14 @@ export default function Dashboard() {
                   {contasModal === 'recebido_anterior' && '↶ Recebidos de vendas anteriores'}
                   {contasModal === 'vencer' && '◷ A vencer'}
                   {contasModal === 'atraso' && '⚠ Em atraso'}
-                  {mesFinanceiro && ` · ${rotuloMes(mesFinanceiro)}`}
+                  {mesFinanceiro && contasModal !== 'atraso' && ` · ${rotuloMes(mesFinanceiro)}`}
                   <span className="text-mata-ink/40 text-[9px] font-sans ml-2">({listaContasModal.length})</span>
                 </h3>
                 <p className="text-[9px] text-mata-ink/50 mt-1">
                   {contasModal === 'recebido' && 'Pagamentos registrados no mês selecionado (ou no mês atual sem seleção), independentemente da data da venda.'}
                   {contasModal === 'recebido_anterior' && 'Pagamentos do mês selecionado (ou atual) referentes a vendas de meses anteriores.'}
                   {contasModal === 'vencer' && 'Parcelas não pagas com vencimento hoje ou futuro, respeitando o mês selecionado.'}
-                  {contasModal === 'atraso' && 'Parcelas vencidas e não pagas, respeitando o mês selecionado pelo vencimento.'}
+                  {contasModal === 'atraso' && 'Todas as parcelas vencidas e não pagas, de qualquer mês, até o pagamento.'}
                 </p>
               </div>
               <button
