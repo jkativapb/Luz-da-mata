@@ -27,6 +27,7 @@ export default function Dashboard() {
   const [categoriaAberta, setCategoriaAberta] = useState(null) // 'em_dia' | 'atencao' | 'precisa_contato' | null
   const [retornosAbertos, setRetornosAbertos] = useState(false)
   const [condicionaisAbertos, setCondicionaisAbertos] = useState(false)
+  const [mesFinanceiro, setMesFinanceiro] = useState(null)
   const [contasModal, setContasModal] = useState(null) // 'recebido' | 'recebido_anterior' | 'vencer' | 'atraso' | null
 
   useEffect(() => {
@@ -195,7 +196,7 @@ export default function Dashboard() {
   const graficoMensal = Array.from({ length: 6 }, (_, indice) => {
     const d = new Date(hoje.getFullYear(), hoje.getMonth() - (5 - indice), 1)
     const chave = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-    return { mes: rotuloMes(chave), total: vendasPorMes[chave] || 0 }
+    return { chave, mes: rotuloMes(chave), total: vendasPorMes[chave] || 0 }
   })
 
 
@@ -368,14 +369,37 @@ export default function Dashboard() {
     .sort((a, b) => b.totalAno - a.totalAno)
     .slice(0, 6)
 
+  // A seleção afeta somente o quadro financeiro e suas listas.
+  const chaveDataFinanceira = (data) => data
+    ? `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, '0')}` : null
+  const pertenceAoMesFinanceiro = (data) => !mesFinanceiro || chaveDataFinanceira(data) === mesFinanceiro
+  const atrasoFiltrado = contasEmAtraso.filter((c) => pertenceAoMesFinanceiro(c.vencimento))
+  const vencerFiltrado = contasAVencer.filter((c) => pertenceAoMesFinanceiro(c.vencimento))
+  const recebidosFiltrados = mesFinanceiro
+    ? contasRecebidas.filter((c) => chaveDataFinanceira(c.dataPagamento) === mesFinanceiro)
+    : contasRecebidasNoMes
+  const anterioresFiltrados = recebidosFiltrados.filter((c) => {
+    const mesVenda = chaveDataFinanceira(dataLocal(c.venda?.data_venda))
+    return mesVenda && mesVenda < (mesFinanceiro || mesAtual)
+  })
+  const somarFinanceiro = (lista) => lista.reduce((s, c) => s + c.valor, 0)
+  const atrasoTotalFiltrado = somarFinanceiro(atrasoFiltrado)
+  const vencerTotalFiltrado = somarFinanceiro(vencerFiltrado)
+  const recebidoTotalFiltrado = somarFinanceiro(recebidosFiltrados)
+  const anterioresTotalFiltrado = somarFinanceiro(anterioresFiltrados)
+  const selecionarMesFinanceiro = (chave) => {
+    setMesFinanceiro((atual) => atual === chave ? null : chave)
+    setContasModal(null)
+  }
+
   const listaContasModal = contasModal === 'recebido'
-    ? contasRecebidasNoMes.slice().sort((a, b) => (b.dataPagamento || 0) - (a.dataPagamento || 0))
+    ? recebidosFiltrados.slice().sort((a, b) => (b.dataPagamento || 0) - (a.dataPagamento || 0))
     : contasModal === 'recebido_anterior'
-      ? contasRecebidasVendasAnteriores.slice().sort((a, b) => (b.dataPagamento || 0) - (a.dataPagamento || 0))
+      ? anterioresFiltrados.slice().sort((a, b) => (b.dataPagamento || 0) - (a.dataPagamento || 0))
       : contasModal === 'vencer'
-      ? contasAVencer.sort((a, b) => a.vencimento - b.vencimento)
+      ? vencerFiltrado.slice().sort((a, b) => a.vencimento - b.vencimento)
       : contasModal === 'atraso'
-        ? contasEmAtraso.sort((a, b) => a.vencimento - b.vencimento)
+        ? atrasoFiltrado.slice().sort((a, b) => a.vencimento - b.vencimento)
         : []
 
   // -------- relacionamento: último contato real do cadastro --------
@@ -527,7 +551,14 @@ export default function Dashboard() {
             <div className="min-w-0">
               <div className="flex items-center justify-between mb-[6px]"><h4 className="font-display text-[15px] text-mata-ink">Vendas por mês</h4><span className="text-[9px] text-mata-ink/50">Últimos 6 meses</span></div>
               <div className="h-[142px] min-w-0">
-                <ResponsiveContainer width="100%" height="100%"><BarChart data={graficoMensal} margin={{ top: 8, right: 4, left: -14, bottom: 0 }}><CartesianGrid strokeDasharray="3 3" stroke="#EDE3D3" vertical={false} /><XAxis dataKey="mes" tick={{ fontSize: 10, fill: '#59483A' }} axisLine={{ stroke: '#D9C7AE' }} tickLine={false} /><YAxis tick={{ fontSize: 10, fill: '#59483A' }} width={48} axisLine={false} tickLine={false} /><Tooltip formatter={(v) => formatarMoeda(v)} /><Bar dataKey="total" fill="#A96A26" radius={[5, 5, 0, 0]} maxBarSize={36} /></BarChart></ResponsiveContainer>
+                <ResponsiveContainer width="100%" height="100%"><BarChart data={graficoMensal} onClick={(estado) => {
+                  const indice = estado?.activeTooltipIndex
+                  const chave = estado?.activePayload?.[0]?.payload?.chave || (indice != null ? graficoMensal[Number(indice)]?.chave : null)
+                  if (chave) selecionarMesFinanceiro(chave)
+                }} margin={{ top: 8, right: 4, left: -14, bottom: 0 }}><CartesianGrid strokeDasharray="3 3" stroke="#EDE3D3" vertical={false} /><XAxis dataKey="mes" tick={({ x, y, payload }) => {
+                  const item = graficoMensal.find((m) => m.mes === payload.value)
+                  return <text x={x} y={y + 12} textAnchor="middle" fontSize={10} fill={mesFinanceiro === item?.chave ? '#5C6E4A' : '#59483A'} fontWeight={mesFinanceiro === item?.chave ? 700 : 400} style={{ cursor: 'pointer' }} role="button" tabIndex={0} aria-label={`Filtrar contas de ${payload.value}`} onClick={(e) => { e.stopPropagation(); if (item) selecionarMesFinanceiro(item.chave) }} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); if (item) selecionarMesFinanceiro(item.chave) } }}>{payload.value}</text>
+                }} axisLine={{ stroke: '#D9C7AE' }} tickLine={false} /><YAxis tick={{ fontSize: 10, fill: '#59483A' }} width={48} axisLine={false} tickLine={false} /><Tooltip formatter={(v) => formatarMoeda(v)} /><Bar dataKey="total" fill="#A96A26" radius={[5, 5, 0, 0]} maxBarSize={36} cursor="pointer">{graficoMensal.map((item) => <Cell key={item.chave} fill={mesFinanceiro === item.chave ? '#5C6E4A' : '#A96A26'} opacity={mesFinanceiro && mesFinanceiro !== item.chave ? 0.5 : 1} />)}</Bar></BarChart></ResponsiveContainer>
               </div>
             </div>
             <div className="min-w-0 lg:border-l lg:border-[#eadfce] lg:pl-4">
@@ -539,17 +570,17 @@ export default function Dashboard() {
 
         {/* QUADRO 2 — Contas a receber */}
         <div className="bg-white/90 border border-[#eadfce] rounded-2xl px-3 py-[8px] shadow-[0_10px_30px_rgba(77,45,18,0.05)]">
-          <div className="flex items-center justify-between gap-2 mb-[6px]"><div className="flex items-center gap-3"><span className="text-[#9A5B20] text-[17px]">◷</span><h3 className="font-display text-[15px] text-mata-ink">Contas a receber</h3></div><span className="text-[9px] text-mata-ink/50">Visão financeira</span></div>
+          <div className="flex items-center justify-between gap-2 mb-[6px]"><div className="flex items-center gap-3"><span className="text-[#9A5B20] text-[17px]">◷</span><h3 className="font-display text-[15px] text-mata-ink">Contas a receber{mesFinanceiro ? ` · ${rotuloMes(mesFinanceiro)}` : ''}</h3></div>{mesFinanceiro ? <button type="button" onClick={() => { setMesFinanceiro(null); setContasModal(null) }} className="text-[9px] text-[#9A5B20] underline">Limpar seleção</button> : <span className="text-[9px] text-mata-ink/50">Visão financeira</span>}</div>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-x-px gap-y-2 mb-[6px]">
-            <button type="button" onClick={() => setContasModal('atraso')} className="text-left rounded-xl bg-red-50/80 border border-red-100 px-2.5 py-2 hover:shadow-md transition" title="Ver parcelas em atraso"><p className="text-[9px] text-red-700/75">Em atraso</p><p className="font-display text-[15px] text-red-700">{formatarMoeda(totalEmAtraso)}</p><p className="text-[9px] text-red-700/60">{String(contasEmAtraso.length).padStart(2, '0')} {contasEmAtraso.length === 1 ? 'registro' : 'registros'}</p></button>
-            <button type="button" onClick={() => setContasModal('vencer')} className="text-left rounded-xl bg-amber-50/80 border border-amber-100 px-2.5 py-2 hover:shadow-md transition" title="Ver parcelas a vencer"><p className="text-[9px] text-amber-700/75">A vencer</p><p className="font-display text-[15px] text-amber-700">{formatarMoeda(totalAVencer)}</p><p className="text-[9px] text-amber-700/60">{String(contasAVencer.length).padStart(2, '0')} {contasAVencer.length === 1 ? 'registro' : 'registros'}</p></button>
-            <button type="button" onClick={() => setContasModal('recebido')} className="text-left rounded-xl bg-green-50/80 border border-green-100 px-2.5 py-2 hover:shadow-md transition" title="Ver pagamentos recebidos no mês"><p className="text-[9px] text-green-700/75">Recebidos no mês</p><p className="font-display text-[15px] text-green-700">{formatarMoeda(recebidoNoMes)}</p><p className="text-[9px] text-green-700/60">{String(contasRecebidasNoMes.length).padStart(2, '0')} {contasRecebidasNoMes.length === 1 ? 'registro' : 'registros'}</p></button>
-            <button type="button" onClick={() => setContasModal('recebido_anterior')} className="text-left rounded-xl bg-blue-50/80 border border-blue-100 px-2.5 py-2 hover:shadow-md transition" title="Ver recebimentos de vendas realizadas antes deste mês"><p className="text-[9px] text-blue-700/75">Recebidos de vendas anteriores</p><p className="font-display text-[15px] text-blue-700">{formatarMoeda(recebidoVendasAnteriores)}</p><p className="text-[9px] text-blue-700/60">{String(contasRecebidasVendasAnteriores.length).padStart(2, '0')} {contasRecebidasVendasAnteriores.length === 1 ? 'registro' : 'registros'}</p></button>
+            <button type="button" onClick={() => setContasModal('atraso')} className="text-left rounded-xl bg-red-50/80 border border-red-100 px-2.5 py-2 hover:shadow-md transition" title="Ver parcelas em atraso"><p className="text-[9px] text-red-700/75">Em atraso</p><p className="font-display text-[15px] text-red-700">{formatarMoeda(atrasoTotalFiltrado)}</p><p className="text-[9px] text-red-700/60">{String(atrasoFiltrado.length).padStart(2, '0')} {atrasoFiltrado.length === 1 ? 'registro' : 'registros'}</p></button>
+            <button type="button" onClick={() => setContasModal('vencer')} className="text-left rounded-xl bg-amber-50/80 border border-amber-100 px-2.5 py-2 hover:shadow-md transition" title="Ver parcelas a vencer"><p className="text-[9px] text-amber-700/75">A vencer</p><p className="font-display text-[15px] text-amber-700">{formatarMoeda(vencerTotalFiltrado)}</p><p className="text-[9px] text-amber-700/60">{String(vencerFiltrado.length).padStart(2, '0')} {vencerFiltrado.length === 1 ? 'registro' : 'registros'}</p></button>
+            <button type="button" onClick={() => setContasModal('recebido')} className="text-left rounded-xl bg-green-50/80 border border-green-100 px-2.5 py-2 hover:shadow-md transition" title="Ver pagamentos recebidos no mês"><p className="text-[9px] text-green-700/75">Recebidos no mês</p><p className="font-display text-[15px] text-green-700">{formatarMoeda(recebidoTotalFiltrado)}</p><p className="text-[9px] text-green-700/60">{String(recebidosFiltrados.length).padStart(2, '0')} {recebidosFiltrados.length === 1 ? 'registro' : 'registros'}</p></button>
+            <button type="button" onClick={() => setContasModal('recebido_anterior')} className="text-left rounded-xl bg-blue-50/80 border border-blue-100 px-2.5 py-2 hover:shadow-md transition" title="Ver recebimentos de vendas realizadas antes deste mês"><p className="text-[9px] text-blue-700/75">Recebidos de vendas anteriores</p><p className="font-display text-[15px] text-blue-700">{formatarMoeda(anterioresTotalFiltrado)}</p><p className="text-[9px] text-blue-700/60">{String(anterioresFiltrados.length).padStart(2, '0')} {anterioresFiltrados.length === 1 ? 'registro' : 'registros'}</p></button>
           </div>
           <div className="border-t border-[#eadfce] pt-2">
             <h4 className="font-display text-[15px] text-mata-ink mb-1">Distribuição das parcelas</h4>
             {(() => {
-              const distribuicaoContas = [{ nome: 'Recebidos no mês', valor: recebidoNoMes }, { nome: 'A vencer', valor: totalAVencer }, { nome: 'Em atraso', valor: totalEmAtraso }].filter((item) => item.valor > 0)
+              const distribuicaoContas = [{ nome: 'Recebidos no mês', valor: recebidoTotalFiltrado }, { nome: 'A vencer', valor: vencerTotalFiltrado }, { nome: 'Em atraso', valor: atrasoTotalFiltrado }].filter((item) => item.valor > 0)
               const totalDistribuicao = distribuicaoContas.reduce((soma, item) => soma + item.valor, 0)
               return totalDistribuicao > 0 ? <div className="grid grid-cols-1 sm:grid-cols-[minmax(130px,0.85fr)_1fr] items-center gap-3"><div className="h-[122px] min-w-0"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={distribuicaoContas} dataKey="valor" nameKey="nome" innerRadius="54%" outerRadius="82%" paddingAngle={2} stroke="none">{distribuicaoContas.map((item, index) => <Cell key={item.nome} fill={item.nome === 'Recebidos no mês' ? '#5C6E4A' : item.nome === 'A vencer' ? '#C9A15A' : '#E76F6F'} />)}</Pie><Tooltip formatter={(v) => formatarMoeda(v)} /></PieChart></ResponsiveContainer></div><div className="space-y-1.5">{distribuicaoContas.map((item) => <div key={item.nome} className="flex items-center justify-between gap-2 text-[9px] border-b border-[#f0e7da] pb-2"><div className="flex items-center gap-2 min-w-0"><span className={`w-2.5 h-2.5 rounded-full shrink-0 ${item.nome === 'Recebidos no mês' ? 'bg-[#5C6E4A]' : item.nome === 'A vencer' ? 'bg-[#C9A15A]' : 'bg-[#E76F6F]'}`} /><span className="text-mata-ink/75">{item.nome}</span></div><div className="text-right shrink-0"><p className="font-medium text-mata-ink">{formatarMoeda(item.valor)}</p><p className="text-[10px] text-mata-ink/45">{Math.round(item.valor / totalDistribuicao * 100)}%</p></div></div>)}</div></div> : <div className="h-[122px] flex items-center justify-center text-[9px] text-mata-ink/45">Ainda não há parcelas financeiras para exibir.</div>
             })()}
@@ -713,13 +744,14 @@ export default function Dashboard() {
                   {contasModal === 'recebido_anterior' && '↶ Recebidos de vendas anteriores'}
                   {contasModal === 'vencer' && '◷ A vencer'}
                   {contasModal === 'atraso' && '⚠ Em atraso'}
+                  {mesFinanceiro && ` · ${rotuloMes(mesFinanceiro)}`}
                   <span className="text-mata-ink/40 text-[9px] font-sans ml-2">({listaContasModal.length})</span>
                 </h3>
                 <p className="text-[9px] text-mata-ink/50 mt-1">
-                  {contasModal === 'recebido' && 'Todos os pagamentos registrados neste mês, independentemente da data da venda.'}
-                  {contasModal === 'recebido_anterior' && 'Pagamentos registrados neste mês referentes a vendas realizadas em meses anteriores.'}
-                  {contasModal === 'vencer' && 'Parcelas ainda não pagas e com vencimento hoje ou em data futura.'}
-                  {contasModal === 'atraso' && 'Todas as parcelas vencidas que ainda não foram pagas.'}
+                  {contasModal === 'recebido' && 'Pagamentos registrados no mês selecionado (ou no mês atual sem seleção), independentemente da data da venda.'}
+                  {contasModal === 'recebido_anterior' && 'Pagamentos do mês selecionado (ou atual) referentes a vendas de meses anteriores.'}
+                  {contasModal === 'vencer' && 'Parcelas não pagas com vencimento hoje ou futuro, respeitando o mês selecionado.'}
+                  {contasModal === 'atraso' && 'Parcelas vencidas e não pagas, respeitando o mês selecionado pelo vencimento.'}
                 </p>
               </div>
               <button
