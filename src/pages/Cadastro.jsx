@@ -342,7 +342,9 @@ export default function Cadastro() {
       setEditandoId(contatoSalvoId)
       setCadastroConversaoSalvo(true)
       setMostrarForm(true)
-      navigate(location.pathname, { replace: true, state: { fluxoConversao: true, visitaId: visitaConversaoId, editarContatoId: contatoSalvoId } })
+      // A ficha já está aberta e confirmada. Consumimos o pedido de edição
+      // para que carregar() não reabra a ficha e desabilite Registrar venda.
+      navigate(location.pathname, { replace: true, state: { fluxoConversao: true, visitaId: visitaConversaoId } })
       await carregar()
       alert('Cadastro salvo! Agora você pode registrar a venda.')
       return

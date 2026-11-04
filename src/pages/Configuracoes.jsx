@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 
@@ -22,6 +22,7 @@ export default function Configuracoes() {
   const [lotes, setLotes] = useState([])
   const [carregando, setCarregando] = useState(true)
   const [erro, setErro] = useState('')
+  const consultaEmAndamento = useRef(false)
   const [produtoAberto, setProdutoAberto] = useState(null)
   const [tipoHistorico, setTipoHistorico] = useState('estoque')
   const [mostrarForm, setMostrarForm] = useState(false)
@@ -35,12 +36,27 @@ export default function Configuracoes() {
     return () => setPageHeader({ title: '', subtitle: '', actions: null })
   }, [setPageHeader])
 
-  async function carregar() {
-    setCarregando(true)
+  useEffect(() => {
+    const atualizar = () => { if (!document.hidden) carregar(true) }
+    window.addEventListener('focus', atualizar)
+    document.addEventListener('visibilitychange', atualizar)
+    const intervalo = window.setInterval(atualizar, 15000)
+    return () => {
+      window.removeEventListener('focus', atualizar)
+      document.removeEventListener('visibilitychange', atualizar)
+      window.clearInterval(intervalo)
+    }
+  }, [])
+
+  async function carregar(silencioso = false) {
+    if (consultaEmAndamento.current) return
+    consultaEmAndamento.current = true
+    if (!silencioso) setCarregando(true)
+    try {
     setErro('')
     const [p, v, ven, i, l] = await Promise.all([
       supabase.from('produtos').select('id, nome, ativo').eq('ativo', true).order('nome'),
-      supabase.from('vendas').select('id, contato_id, vendedor_id, vendedor_nome, data_venda, situacao_pagamento, nf_cancelada, contatos(nome)').order('data_venda', { ascending: false }),
+      supabase.from('vendas').select('id, contato_id, vendedor_id, vendedor_nome, data_venda, situacao_pagamento, nf_cancelada, despachado_por, contatos(nome)').order('data_venda', { ascending: false }),
       supabase.from('vendedores').select('id, nome, ativo').eq('ativo', true).order('nome'),
       supabase.from('itens_venda').select('id, venda_id, produto_id, produto_nome, quantidade'),
       supabase.from('controle_estoque_pessoal').select('*').order('data_registro', { ascending: false }),
@@ -52,6 +68,7 @@ export default function Configuracoes() {
         ? 'Falta criar a tabela do controle pessoal no Supabase. Execute o SQL fornecido junto com este arquivo.'
         : `Não foi possível carregar os dados: ${falha.error.message}`)
     }
+    if (falha) return
     setProdutos(p.data || [])
     setVendas(v.data || [])
     setVendedores(ven.data || [])
@@ -59,18 +76,28 @@ export default function Configuracoes() {
     if (jane) setForm((atual) => ({ ...atual }))
     setItens(i.data || [])
     setLotes(l.data || [])
-    setCarregando(false)
+    } catch (error) {
+      setErro(`Não foi possível atualizar o estoque: ${error.message}`)
+    } finally {
+      consultaEmAndamento.current = false
+      setCarregando(false)
+    }
   }
 
   const linhas = useMemo(() => {
     const jane = vendedores.find((v) => String(v.nome || '').trim().toLowerCase() === 'jane' || String(v.nome || '').trim().toLowerCase().startsWith('jane '))
     const janeId = jane?.id
     const ativas = vendas.filter((v) => !v.nf_cancelada)
+    // Registros antigos sem responsável mantêm a regra anterior até serem revisados.
+    const usaEstoqueJane = (v) => {
+      const responsavel = String(v.despachado_por || '').trim().toLowerCase()
+      if (responsavel) return responsavel === 'jane'
+      return Boolean(janeId && String(v.vendedor_id) === String(janeId))
+    }
     const saidas = []
     for (const lote of lotes) {
-      // O estoque pessoal pertence à Jane. O fornecedor/lote não determina
-      // quem vendeu: somente vendas registradas com Jane como vendedora baixam este estoque.
-      const vendaIds = new Set(ativas.filter((v) => janeId && String(v.vendedor_id) === String(janeId)).map((v) => v.id))
+      // Origem dos produtos determinada por quem despachou, independente do vendedor.
+      const vendaIds = new Set(ativas.filter(usaEstoqueJane).map((v) => v.id))
       const itensDoProduto = itens.filter((i) => vendaIds.has(i.venda_id) && (
         (i.produto_id && String(i.produto_id) === String(lote.produto_id)) ||
         (!i.produto_id && String(i.produto_nome || '').trim().toLowerCase() === String(lote.produto_nome || '').trim().toLowerCase())
@@ -93,6 +120,7 @@ export default function Configuracoes() {
         situacao: venda.situacao_pagamento === 'condicional' ? 'Condicional' : 'Venda',
         quantidade,
         vendedor_id: lote.vendedor_id,
+        responsavel: venda.despachado_por ? 'Jane' : 'Não informado (regra anterior)',
       }))
       saidas.push({ ...lote, destinos })
     }
@@ -110,7 +138,7 @@ export default function Configuracoes() {
       }))
       const destinos = [...destinosMap.values()]
       const destinados = destinos.reduce((s, d) => s + Number(d.quantidade || 0), 0)
-      return { produto, estoque, destinados, disponiveis: Math.max(0, estoque - destinados), destinos, lotes: lotesProduto }
+      return { produto, estoque, destinados, disponiveis: Math.max(0, estoque - destinados), divergencia: Math.max(0, destinados - estoque), destinos, lotes: lotesProduto }
     }).filter((p) => p.estoque > 0 || p.destinados > 0)
   }, [produtos, linhas])
 
@@ -163,14 +191,17 @@ export default function Configuracoes() {
             <p className="text-sm text-[#806e5d] mt-1">Meu controle pessoal de produtos. Clique no card para ver os nomes dos clientes.</p>
           </div>
         </div>
+        <div className="flex flex-wrap gap-2">
+        <button type="button" disabled={carregando} onClick={() => carregar()} className="rounded-xl border border-[#dec6a8] px-4 py-2.5 text-sm text-[#8d5527] disabled:opacity-50">Atualizar</button>
         <button onClick={() => { setForm({ ...formVazio, data_registro: hojeLocal() }); setErro(''); setMostrarForm(true) }} className="shrink-0 rounded-xl bg-gradient-to-r from-[#8d5527] to-[#ad753d] text-white px-4 py-2.5 text-sm font-medium shadow-sm hover:brightness-105">+ Registrar produtos</button>
+        </div>
       </div>
 
       {erro && <div className="rounded-xl border border-[#e6c6b8] bg-[#fff5f1] px-4 py-3 text-sm text-[#8d3d2b]">{erro}</div>}
 
       {carregando ? <div className="rounded-2xl border border-[#eadfce] bg-white p-8 text-center text-sm text-[#8b796a]">Carregando controle de produtos…</div> : (
         <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-3">
-          {resumoProdutos.map(({ produto, estoque, destinados, disponiveis }) => (
+          {resumoProdutos.map(({ produto, estoque, destinados, disponiveis, divergencia }) => (
             <div key={produto.id} className="rounded-2xl border border-[#eadfce] bg-[#fffdfa] p-4 shadow-[0_5px_18px_rgba(77,45,18,0.035)]">
               <div className="flex items-center justify-between gap-2 pb-3 border-b border-[#eee4d7]">
                 <h3 className="font-display text-[15px] leading-tight whitespace-nowrap text-[#2f2118]">{produto.nome}</h3>
@@ -180,6 +211,7 @@ export default function Configuracoes() {
                 <button type="button" onClick={() => { setProdutoAberto(produto.id); setTipoHistorico('destinos') }} className="rounded-xl bg-[#faead8] p-2.5 text-center min-w-0 hover:ring-1 hover:ring-[#d8b28b] transition"><p className="text-[11px] sm:text-xs text-[#805226]">Destinados</p><p className="font-display text-3xl text-[#805226] mt-1">{destinados}</p><p className="text-[10px] text-[#805226]">vendidos + cond.</p></button>
                 <div className="rounded-xl bg-[#e9eddf] p-2.5 text-center min-w-0"><p className="text-[11px] sm:text-xs text-[#405638]">Disponíveis</p><p className="font-display text-3xl text-[#234b27] mt-1">{disponiveis}</p><p className="text-[10px] text-[#405638]">{disponiveis === 1 ? 'unidade' : 'unidades'}</p></div>
               </div>
+              {divergencia > 0 && <p className="mt-2 text-[11px] text-[#9a5b20]">{plural(divergencia)} acima do estoque registrado. Revise os responsáveis pelos despachos e as entradas.</p>}
             </div>
           ))}
           {!resumoProdutos.length && <div className="md:col-span-2 2xl:col-span-3 rounded-2xl border border-dashed border-[#d9c6b0] bg-white/70 p-10 text-center"><p className="font-display text-xl text-[#4b3828]">Nenhum produto registrado ainda</p><p className="text-sm text-[#8b796a] mt-2">Use “Registrar produtos” para informar o lote inicial que você pegou.</p></div>}
@@ -200,8 +232,8 @@ export default function Configuracoes() {
         <div className="px-5 py-4 border-b border-[#eadfce] flex items-start justify-between gap-3"><div><button type="button" onClick={() => setProdutoAberto(null)} className="text-xs text-[#8d5527] mb-2">← Voltar aos produtos</button><h2 className="font-display text-2xl text-[#2f2118]">{produtoSelecionado.produto.nome}</h2><p className="text-xs text-[#8b796a] mt-1">{tipoHistorico === 'estoque' ? 'Histórico de entradas no estoque' : 'Histórico de destinações'}</p></div><button type="button" onClick={() => setProdutoAberto(null)} className="text-xl text-[#806e5d]">×</button></div>
         <div className="p-4 sm:p-5 overflow-y-auto space-y-4">
           {tipoHistorico === 'estoque' && <div className="rounded-xl border border-[#eadfce] overflow-hidden"><div className="px-4 py-3 bg-[#faf5ee] font-display text-lg text-[#3c2b1d]">Lotes do Meu Estoque</div><div className="divide-y divide-[#eee4d7]">{produtoSelecionado.lotes.slice().sort((a,b) => String(b.data_registro).localeCompare(String(a.data_registro))).map((lote) => <div key={lote.id} className="px-4 py-3 flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-medium text-[#3c2b1d]">{plural(Number(lote.quantidade_inicial || 0))}</p><p className="text-xs text-[#8b796a]">Data em que peguei: {dataBR(lote.data_registro)}</p></div><button type="button" onClick={() => editarLote(lote)} className="rounded-lg border border-[#dec6a8] px-3 py-1.5 text-sm text-[#8d5527] hover:bg-[#faf5ee]">Editar</button></div>)}{!produtoSelecionado.lotes.length && <p className="px-4 py-6 text-center text-sm text-[#8b796a]">Nenhuma entrada registrada.</p>}</div></div>}
-          {tipoHistorico === 'destinos' && <div className="rounded-xl border border-[#eadfce] overflow-hidden"><div className="px-4 py-3 bg-[#faf5ee] font-display text-lg text-[#3c2b1d]">Vendas e condicionais deste produto</div><div className="overflow-x-auto"><table className="w-full text-sm"><thead className="bg-white text-[#806e5d]"><tr><th className="text-left font-medium px-4 py-3">Data</th><th className="text-left font-medium px-4 py-3">Cliente</th><th className="text-left font-medium px-4 py-3">Situação</th><th className="text-right font-medium px-4 py-3">Quantidade</th></tr></thead><tbody className="divide-y divide-[#eee4d7]">{produtoSelecionado.destinos.slice().sort((a,b) => String(b.data).localeCompare(String(a.data))).map((d, idx) => <tr key={`${d.venda_id}-${idx}`}><td className="px-4 py-3 whitespace-nowrap">{dataBR(d.data)}</td><td className="px-4 py-3">{d.cliente}</td><td className="px-4 py-3"><span className={`inline-flex rounded-full px-2.5 py-1 text-xs ${d.situacao === 'Condicional' ? 'bg-[#faead8] text-[#805226]' : 'bg-[#e9eddf] text-[#405638]'}`}>{d.situacao}</span></td><td className="px-4 py-3 text-right">{plural(d.quantidade)}</td></tr>)}{!produtoSelecionado.destinos.length && <tr><td colSpan="4" className="px-4 py-8 text-center text-[#8b796a]">Nenhuma venda ou condicional registrada para este produto.</td></tr>}</tbody></table></div></div>}
-          {tipoHistorico === 'destinos' && <p className="text-xs text-[#8b796a]">São consideradas vendas e condicionais não canceladas em que Jane é a vendedora. Disponíveis é calculado automaticamente: estoque recebido menos unidades destinadas.</p>}
+          {tipoHistorico === 'destinos' && <div className="rounded-xl border border-[#eadfce] overflow-hidden"><div className="px-4 py-3 bg-[#faf5ee] font-display text-lg text-[#3c2b1d]">Vendas e condicionais deste produto</div><div className="overflow-x-auto"><table className="w-full text-sm"><thead className="bg-white text-[#806e5d]"><tr><th className="text-left font-medium px-4 py-3">Data</th><th className="text-left font-medium px-4 py-3">Cliente</th><th className="text-left font-medium px-4 py-3">Situação</th><th className="text-right font-medium px-4 py-3">Quantidade</th></tr></thead><tbody className="divide-y divide-[#eee4d7]">{produtoSelecionado.destinos.slice().sort((a,b) => String(b.data).localeCompare(String(a.data))).map((d, idx) => <tr key={`${d.venda_id}-${idx}`}><td className="px-4 py-3 whitespace-nowrap">{dataBR(d.data)}</td><td className="px-4 py-3">{d.cliente}<p className="text-[10px] text-[#8b796a]">Despacho: {d.responsavel}</p></td><td className="px-4 py-3"><span className={`inline-flex rounded-full px-2.5 py-1 text-xs ${d.situacao === 'Condicional' ? 'bg-[#faead8] text-[#805226]' : 'bg-[#e9eddf] text-[#405638]'}`}>{d.situacao}</span></td><td className="px-4 py-3 text-right">{plural(d.quantidade)}</td></tr>)}{!produtoSelecionado.destinos.length && <tr><td colSpan="4" className="px-4 py-8 text-center text-[#8b796a]">Nenhuma venda ou condicional registrada para este produto.</td></tr>}</tbody></table></div></div>}
+          {tipoHistorico === 'destinos' && <p className="text-xs text-[#8b796a]">São consideradas vendas e condicionais não canceladas com despacho por Jane. Despachos por Samuel não descontam deste estoque. Registros antigos sem responsável mantêm o cálculo pelo vendedor até serem revisados. Disponíveis é calculado automaticamente: estoque recebido menos unidades destinadas.</p>}
         </div>
       </div></div>}
     </div>

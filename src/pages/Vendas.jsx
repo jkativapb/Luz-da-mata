@@ -45,6 +45,11 @@ const vendaVazia = {
   data_retorno_condicional: '',
   desconto_venda: 0,
   observacoes: '',
+  despachado_por: '',
+  status_entrega: 'a_enviar',
+  data_envio: '',
+  transportadora: '',
+  codigo_rastreamento: '',
   id: null,
   nf_transmitida: false,
   nf_cancelada: false,
@@ -329,6 +334,11 @@ export default function Vendas() {
       data_retorno_condicional: String(venda.data_retorno_condicional || '').slice(0, 10),
       desconto_venda: Number(venda.desconto_venda || 0),
       observacoes: venda.observacoes || '',
+      despachado_por: venda.despachado_por || '',
+      status_entrega: venda.status_entrega || 'a_enviar',
+      data_envio: String(venda.data_envio || '').slice(0, 10),
+      transportadora: venda.transportadora || '',
+      codigo_rastreamento: venda.codigo_rastreamento || '',
       nf_transmitida: Boolean(venda.nf_transmitida),
       nf_cancelada: Boolean(venda.nf_cancelada),
     })
@@ -359,8 +369,22 @@ export default function Vendas() {
     }
   }
 
+  function camposEntrega() {
+    return {
+      despachado_por: form.despachado_por || null,
+      status_entrega: ['a_enviar', 'enviado', 'entregue'].includes(form.status_entrega) ? form.status_entrega : 'a_enviar',
+      data_envio: form.data_envio || null,
+      transportadora: form.transportadora.trim() || null,
+      codigo_rastreamento: form.codigo_rastreamento.trim() || null,
+    }
+  }
+
   async function salvar(e) {
     e.preventDefault()
+    if (form.status_entrega !== 'a_enviar' && !form.despachado_por) {
+      alert('Informe quem despachou a venda: Jane ou Samuel.')
+      return
+    }
 
     // Venda com NF: só pagamento e datas. Itens, cliente, valores e NF não são tocados.
     if (modoPagamento && form.id) {
@@ -368,7 +392,7 @@ export default function Vendas() {
       const dataVendaPg = String(form.data_venda || '').slice(0, 10)
       const { data, error } = await supabase
         .from('vendas')
-        .update(camposPagamento(sit, dataVendaPg))
+        .update({ ...camposPagamento(sit, dataVendaPg), ...camposEntrega() })
         .eq('id', form.id)
         .select('*, contatos(nome)')
         .single()
@@ -434,6 +458,7 @@ export default function Vendas() {
       primeira_venda: Boolean(form.primeira_venda),
       forma_pagamento: form.forma_pagamento || null,
       ...camposPagamento(situacaoFinal, dataVenda),
+      ...camposEntrega(),
       desconto_venda: Number(form.desconto_venda || 0),
       observacoes: form.observacoes || null,
       nf_transmitida: Boolean(form.nf_transmitida),
@@ -886,7 +911,33 @@ export default function Vendas() {
         .lm-scrollbar::-webkit-scrollbar-thumb:hover {
           background: #9A5B20;
         }
-        .modo-pagamento section:not(.secao-pagamento):not(.secao-resumo):not(.secao-itens) {
+        /* Compactação restrita ao formulário de venda. */
+        .venda-layout { font-size: 12px; }
+        .venda-layout h3 { font-family: inherit; font-weight: 600; font-size: 24px; }
+        .venda-layout h4 { font-family: inherit; font-weight: 600; font-size: 15px; }
+        .venda-layout > div.relative.shrink-0 { padding: 14px 20px 12px; background: #fffaf3; }
+        .venda-layout > div.relative.shrink-0 > p { display: none; }
+        .venda-layout > div.relative.shrink-0 .absolute { display: none; }
+        .venda-layout section { padding: 10px 12px; border-radius: 12px; box-shadow: none; }
+        .venda-layout input:not([type=radio]):not([type=checkbox]),
+        .venda-layout select { font-size: 12px; padding-top: 6px; padding-bottom: 6px; }
+        .venda-layout textarea { height: 52px; font-size: 12px; }
+        .venda-layout label.cursor-pointer { padding-top: 4px; padding-bottom: 4px; }
+        .venda-layout .secao-itens { padding: 0; }
+        .venda-layout .secao-itens > div:first-child { padding: 8px 12px; background: #faf4ec; }
+        .venda-layout .secao-itens > div:first-child h4 { color: #3c2a1f; }
+        .venda-layout .secao-itens > div:first-child button { padding: 5px 9px; box-shadow: none; font-size: 11px; }
+        .venda-layout .secao-pagamento > div > div:first-child { padding-right: 10px; }
+        .venda-layout .secao-pagamento h4 { margin: 0; }
+        .venda-layout .secao-pagamento .mb-2\\.5 { margin-bottom: 6px; }
+        .venda-layout .secao-pagamento label p { font-size: 10px; }
+        .venda-layout .secao-resumo button[type=submit] { padding: 9px 12px; font-size: 12px; box-shadow: none; }
+        .venda-layout .secao-resumo strong.font-display { font-size: 23px; }
+        .venda-layout .secao-resumo span.font-display { font-size: 16px; }
+        @media (max-width: 639px) {
+          .venda-layout .secao-pagamento > div > div:first-child { border-right: 0; padding-right: 0; }
+        }
+        .modo-pagamento section:not(.secao-pagamento):not(.secao-resumo):not(.secao-itens):not(.secao-entrega) {
           pointer-events: none;
           opacity: 0.55;
         }
@@ -1327,6 +1378,16 @@ export default function Vendas() {
                   </strong>
                 </div>
 
+                {(vendaSelecionada.status_entrega || vendaSelecionada.codigo_rastreamento) && (
+                  <div className="rounded-xl border border-[#eadfce] p-3 mt-2 text-[12px] text-[#543726] space-y-1">
+                    <strong>Entrega: {{ a_enviar: 'A enviar', enviado: 'Enviado', entregue: 'Entregue' }[vendaSelecionada.status_entrega] || 'A enviar'}</strong>
+                    {vendaSelecionada.despachado_por && <p>Quem despachou: {vendaSelecionada.despachado_por === 'samuel' ? 'Samuel' : 'Jane'}</p>}
+                    {vendaSelecionada.data_envio && <p>Enviado em: {String(vendaSelecionada.data_envio).slice(0, 10).split('-').reverse().join('/')}</p>}
+                    {vendaSelecionada.transportadora && <p>Transportadora: {vendaSelecionada.transportadora}</p>}
+                    {vendaSelecionada.codigo_rastreamento && <p className="break-all">Rastreamento: <strong>{vendaSelecionada.codigo_rastreamento}</strong></p>}
+                  </div>
+                )}
+
                 {vendaSelecionada.observacoes && (
                   <p className="text-[10px] text-mata-ink/50 mt-2">
                     {vendaSelecionada.observacoes}
@@ -1520,7 +1581,7 @@ export default function Vendas() {
         <div className="fixed inset-0 bg-[#20140d]/55 backdrop-blur-[3px] flex items-center justify-center p-3 sm:p-4 z-50">
           <form
             onSubmit={salvar}
-            className="relative w-full max-w-[1260px] max-h-[calc(100vh-28px)] overflow-hidden rounded-[22px] border border-[#d9b98f] bg-[#fffdf9] shadow-[0_28px_80px_rgba(35,20,10,0.35)] flex flex-col"
+            className="venda-layout relative w-full max-w-[1240px] max-h-[calc(100vh-28px)] overflow-hidden rounded-[22px] border border-[#d9b98f] bg-[#fffdf9] shadow-[0_28px_80px_rgba(35,20,10,0.35)] flex flex-col"
           >
             <button
               type="button"
@@ -1531,7 +1592,7 @@ export default function Vendas() {
               ×
             </button>
 
-            <div className="relative shrink-0 px-5 sm:px-7 pt-4 pb-3 border-b border-[#eadfce] overflow-hidden">
+            <div className="relative shrink-0 bg-gradient-to-r from-[#fbe4c6] via-[#fff9f0] to-[#f7e1c8] px-5 sm:px-7 pt-4 pb-3 border-b border-[#eadfce] overflow-hidden">
               <div className="absolute -right-8 -top-10 w-56 h-56 opacity-[0.16] pointer-events-none">
                 <div className="absolute right-14 top-10 w-[2px] h-40 bg-[#a66a32] rotate-[20deg] origin-bottom rounded-full" />
                 <div className="absolute right-16 top-14 w-24 h-10 border border-[#a66a32] rounded-[100%_0] rotate-[25deg]" />
@@ -1544,7 +1605,7 @@ export default function Vendas() {
                 </h3>
                 <p className="mt-1.5 font-display text-[14px] text-[#9A5B20]">
                   {modoPagamento
-                    ? 'NF transmitida: só é possível alterar o pagamento e as datas.'
+                    ? 'NF transmitida: é possível alterar pagamento, datas e entrega.'
                     : 'Registre a venda de forma rápida e prática.'}
                 </p>
               </div>
@@ -1557,7 +1618,7 @@ export default function Vendas() {
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto lm-scrollbar px-4 sm:px-5 py-3">
-              <div className={`grid grid-cols-1 lg:grid-cols-[minmax(0,1.12fr)_minmax(250px,.72fr)_minmax(430px,1.16fr)] lg:grid-rows-[220px_auto_auto] gap-3 items-stretch ${modoPagamento ? 'modo-pagamento' : ''}`}>
+              <div className={`grid grid-cols-1 lg:grid-cols-[minmax(0,1.12fr)_minmax(200px,.72fr)_minmax(390px,1.3fr)] lg:grid-rows-[170px_auto_auto] gap-3 items-stretch ${modoPagamento ? 'modo-pagamento' : ''}`}>
                 {/* COLUNA ESQUERDA */}
                 <>
                   {/* CLIENTE + VENDEDOR/DATA */}
@@ -1673,7 +1734,7 @@ export default function Vendas() {
 
                   {/* PAGAMENTO */}
                   <section className="secao-pagamento lg:col-start-1 lg:col-span-2 lg:row-start-2 rounded-2xl border border-[#eadfce] bg-white px-4 py-3.5 shadow-[0_5px_18px_rgba(77,45,18,0.035)]">
-                    <div className="grid grid-cols-[190px_minmax(0,1fr)] gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-[155px_minmax(0,1fr)] gap-3">
                       <div className="pr-4 border-r border-[#eadfce]">
                         <div className="flex items-center gap-2 mb-2.5">
                           <span className="text-xl text-[#9A5B20]">▣</span>
@@ -1813,8 +1874,41 @@ export default function Vendas() {
                     </div>
                   </section>
 
-                  {/* OBSERVAÇÕES */}
-                  <section className="lg:col-start-1 lg:col-span-2 lg:row-start-3 rounded-2xl border border-[#eadfce] bg-white px-4 py-3 shadow-[0_5px_18px_rgba(77,45,18,0.035)]">
+                  {/* ENTREGA E OBSERVAÇÕES */}
+                  <div className="lg:col-start-1 lg:col-span-2 lg:row-start-3 grid grid-cols-1 md:grid-cols-[1.2fr_1fr] gap-3">
+                  <section className="secao-entrega rounded-2xl border border-[#eadfce] bg-white px-4 py-3 shadow-[0_5px_18px_rgba(77,45,18,0.035)]">
+                    <h4 className="font-display text-[19px] text-[#2f2118] mb-2">Entrega</h4>
+                    <div className="grid grid-cols-2 gap-2 text-[12px] text-[#543726]">
+                      <label className="min-w-0">Quem despachou
+                        <select value={form.despachado_por} onChange={(e) => setForm({ ...form, despachado_por: e.target.value })} className="mt-1 w-full border border-[#dec6a8] bg-[#fffdf9] rounded-xl px-2 py-2">
+                          <option value="">Selecione</option><option value="jane">Jane</option><option value="samuel">Samuel</option>
+                        </select>
+                      </label>
+                      <label className="min-w-0">Data do envio
+                        <input type="date" value={form.data_envio} onChange={(e) => setForm({ ...form, data_envio: e.target.value })} className="mt-1 w-full min-w-0 border border-[#dec6a8] bg-[#fffdf9] rounded-xl px-2 py-2" />
+                      </label>
+                      <label className="col-span-2">Status
+                        <select value={form.status_entrega} onChange={(e) => setForm({ ...form, status_entrega: e.target.value })} className="mt-1 w-full border border-[#dec6a8] bg-[#fffdf9] rounded-xl px-2 py-2">
+                          <option value="a_enviar">A enviar</option>
+                          <option value="enviado">Enviado</option>
+                          <option value="entregue">Entregue</option>
+                        </select>
+                      </label>
+
+                      <label className="col-span-2">Transportadora <span className="text-[#9b8a7c]">(opcional)</span>
+                        <input type="text" value={form.transportadora} onChange={(e) => setForm({ ...form, transportadora: e.target.value })} placeholder="Ex.: Correios" className="mt-1 w-full border border-[#dec6a8] bg-[#fffdf9] rounded-xl px-3 py-2" />
+                      </label>
+
+                    </div>
+                    <p className="mt-2 text-[11px] text-[#806e5d]">{form.despachado_por === 'samuel' ? 'Despacho por Samuel: não desconta do estoque de Jane.' : form.despachado_por === 'jane' ? 'Despacho por Jane: desconta do estoque de Jane.' : 'Selecione o responsável para definir a origem dos produtos.'}</p>
+                  </section>
+                    <div className="min-w-0 space-y-2">
+                      <section className="secao-entrega rounded-2xl border border-[#eadfce] bg-white px-4 py-3 text-[12px] text-[#543726]">
+                      <label className="col-span-2">Código de rastreamento <span className="text-[#9b8a7c]">(opcional)</span>
+                        <input type="text" value={form.codigo_rastreamento} onChange={(e) => setForm({ ...form, codigo_rastreamento: e.target.value })} placeholder="Informe o código gerado" className="mt-1 w-full border border-[#dec6a8] bg-[#fffdf9] rounded-xl px-3 py-2" />
+                      </label>
+                      </section>
+                  <section className="secao-observacoes rounded-2xl border border-[#eadfce] bg-white px-4 py-3 shadow-[0_5px_18px_rgba(77,45,18,0.035)]">
                     <div className="flex items-center gap-2 mb-1.5">
                       <span className="text-xl text-[#9A5B20]">▣</span>
                       <h4 className="font-display text-[19px] text-[#2f2118]">Observações</h4>
@@ -1827,11 +1921,13 @@ export default function Vendas() {
                       className="w-full h-[62px] resize-none border border-[#dec6a8] bg-[#fffdf9] rounded-xl px-3 py-2 text-[12px] outline-none focus:ring-2 focus:ring-[#B8782D]/20"
                     />
                   </section>
+                    </div>
+                  </div>
                 </>
 
                 {/* COLUNA DIREITA */}
-                <div className="contents">
-                  <section className="secao-itens lg:col-start-3 lg:row-start-1 h-[230px] rounded-2xl border border-[#eadfce] bg-white overflow-hidden shadow-[0_5px_18px_rgba(77,45,18,0.035)]">
+                <div className="lg:col-start-3 lg:row-start-1 lg:row-span-3 min-w-0 flex flex-col gap-3">
+                  <section className="secao-itens h-[300px] shrink-0 rounded-2xl border border-[#eadfce] bg-white overflow-hidden shadow-[0_5px_18px_rgba(77,45,18,0.035)]">
                     <div className="px-4 py-3 flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
                         <span className="text-2xl text-[#8f5725]">🛒</span>
@@ -1848,7 +1944,7 @@ export default function Vendas() {
                         <span>Produto</span><span className="text-center">Qtd</span><span className="text-right">Valor</span><span className="text-right">Subtotal</span><span />
                       </div>
 
-                      <div className="divide-y divide-[#eee3d5] max-h-[145px] overflow-y-auto lm-scrollbar">
+                      <div className="divide-y divide-[#eee3d5] max-h-[230px] overflow-y-auto lm-scrollbar">
                         {itensForm.map((item, idx) => {
                           const produtoSelecionado = produtos.find((p) => p.id === item.produto_id)
                           const imagem = obterImagemProduto(produtoSelecionado)
@@ -1891,13 +1987,17 @@ export default function Vendas() {
                   </section>
 
                   {/* RESUMO */}
-                  <section className="secao-resumo lg:col-start-3 lg:row-start-2 rounded-2xl border border-[#eadfce] bg-[#fffaf3] px-4 py-3 shadow-[0_5px_18px_rgba(77,45,18,0.035)]">
+                  <section className="secao-resumo rounded-2xl border border-[#eadfce] bg-[#fffaf3] px-4 py-3 shadow-[0_5px_18px_rgba(77,45,18,0.035)]">
                     <div className="flex items-center gap-2 mb-2">
                       <span className="text-xl text-[#9A5B20]">▣</span>
                       <h4 className="font-display text-[20px] text-[#2f2118]">Resumo da venda</h4>
                     </div>
 
                     <div className="space-y-2 text-[12px]">
+                      <div className="flex justify-between gap-3 pb-2 border-b border-[#eadfce]">
+                        <span className="text-[#584536]">Total de itens</span>
+                        <strong className="text-[#2f2118]">{itensForm.reduce((total, item) => total + (Number(item.quantidade) || 0), 0)} unidades</strong>
+                      </div>
                       <div className="flex justify-between gap-3">
                         <span className="text-[#584536]">Subtotal</span>
                         <strong className="text-[#2f2118]">{formatarMoeda(subtotalForm)}</strong>
@@ -1924,7 +2024,7 @@ export default function Vendas() {
 
                     <button type="submit" className="w-full mt-3 inline-flex items-center justify-center gap-2 px-5 py-3 text-[14px] font-medium bg-gradient-to-r from-[#9A5B20] to-[#B8782D] text-white rounded-xl shadow-[0_8px_20px_rgba(154,91,32,0.18)] hover:brightness-105 transition">
                       <span>▣</span>
-                      {modoPagamento ? 'Salvar pagamento' : 'Finalizar venda'}
+                      {modoPagamento ? 'Salvar alterações' : 'Finalizar venda'}
                     </button>
                   </section>
                 </div>
